@@ -1,0 +1,29 @@
+[tool.poetry]
+name = "sqletl"
+version = "0.1.0"
+description = "Create ETL pipelines with SQL"
+authors = ["Digicoop <contact@digicoop.io>"]
+readme = "README.md"
+license = "MIT"
+repository = "https://github.com/digicoop/sqletl"
+packages = [{include = "sqletl"}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+pyparsing = "^3.1.2"
+requests = "^2.32.3"
+jsonpath-ng = "^1.6.1"
+pandas = "^2.2.2"
+postgres-proto = { path = "../postgres-proto/", develop = true }
+psycopg = { extras = ["binary"], version = "^3.1.18" }
+mysql-connector-python =  "^8.3.0"
+s3fs = "^2024.9.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0.0"
+pytest-cov = "^4.1.0"
+ruff = "^0.4.3"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

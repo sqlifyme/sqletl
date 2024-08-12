@@ -1,0 +1,12 @@
+{
+    "expand": [
+        {"id": 1, "fields": {"col1": "value1", "col2": "value2"}},
+        {"id": 2, "fields": {"col1": "value3", "col2": "value4"}}
+    ],
+    "unnest": [
+        {"id": 1, "sub": [{"col1": "value1", "col2": "value2"}, {"col1": "value3", "col2": "value4"}]}
+    ],
+    "unnest2": [
+        {"id": 1, "sub": [{"col1": "value1", "col2": "value2"}, {"col1": "value3", "col2": "value4", "col3": "value5"}]}
+    ]
+}
