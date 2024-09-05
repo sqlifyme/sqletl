@@ -14,7 +14,7 @@ def test_simple():
         Join([
             Load('https://geo.api.gouv.fr/communes', {'codePostal': Field('properties->postcode')})
         ]),
-        Map({'population': 'population', 'nom': 'nom'})
+        Map({'population': Field('population'), 'nom': Field('nom')})
     ])
     r = pipe.run().to_dict()
     print(r)
@@ -31,10 +31,7 @@ def test_union():
                 Load('https://geo.api.gouv.fr/communes', {'codePostal': '75008'})
             ]
         ),
-        Map({
-            'nom': Field('nom'),
-            'population': Field('population')
-        })
+        Map({'population': Field('population'), 'nom': Field('nom')})
     ])
     r = pipe.run().to_dict()
     print(r)
@@ -77,7 +74,7 @@ def test_equality():
         Join([
             Load('https://geo.api.gouv.fr/communes', {'codePostal': Field('properties->postcode')})
         ]),
-        Map({'population': 'population', 'nom': 'nom'})
+        Map({'population': Field('population'), 'nom': Field('nom')})
     ])
 
     pipe2 = Pipeline([
@@ -85,7 +82,7 @@ def test_equality():
         Join([
             Load('https://geo.api.gouv.fr/communes', {'codePostal': Field('properties->postcode')})
         ]),
-        Map({'population': 'population', 'nom': 'nom'})
+        Map({'population': Field('population'), 'nom': Field('nom')})
     ])
 
     pipe3 = Pipeline([
@@ -93,7 +90,7 @@ def test_equality():
         Join([
             Load('https://geo.api.gouv.fr/communes', {'codePostal': Field('properties->postcode')})
         ]),
-        Map({'population': 'population', 'nom': 'nom'})
+        Map({'population': Field('population'), 'nom': Field('nom')})
     ])
 
     assert pipe1 == pipe2
@@ -148,7 +145,7 @@ def test_file():
 def test_expand():
     pipe = Pipeline([
         Load('file://tests/fixtures/data.json#expand'),
-        Map({"id": "id", "fields": "fields"}),
+        Map({"id": Field("id"), "fields": Field("fields")}),
         Expand("fields")
     ])
     r = pipe.run()
@@ -163,7 +160,7 @@ def test_expand():
 def test_unnest():
     pipe = Pipeline([
         Load('file://tests/fixtures/data.json#unnest'),
-        Map({"sub": "sub"}),
+        Map({"sub": Field("sub")}),
         Unnest("sub")
     ])
     r = pipe.run()
@@ -176,7 +173,7 @@ def test_unnest():
 
     pipe = Pipeline([
         Load('file://tests/fixtures/data.json#unnest2'),
-        Map({"sub": "sub"}),
+        Map({"sub": Field("sub")}),
         Unnest("sub")
     ])
     r = pipe.run()

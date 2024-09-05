@@ -7,6 +7,7 @@ import urllib.parse
 import psycopg
 import mysql.connector
 import s3fs
+import fsspec
 
 
 class Http:

@@ -6,6 +6,8 @@ import textwrap
 import sqlite3
 import json
 import itertools
+import threading
+from contextlib import contextmanager
 from .ctx import Context
 from .datatable import DataTable, iter_peek
 
@@ -65,6 +67,18 @@ class Pipeline(TaskGroup):
         return super().run(ctx, DataTable())
 
 
+class Group(Task):
+    def __init__(self, tasks):
+        super().__init__()
+        self.tasks = TaskGroup(tasks)
+
+    def run(self, ctx: Context, prev: DataTable):
+        return self.tasks.run(ctx, prev)
+    
+    def __repr__(self):
+        return f"{self.__class__.__name__}\n" + textwrap.indent(repr(self.tasks), "  ")
+
+
 class Field:
     def __init__(self, name, source=None, path=None):
         if "->" in name:
@@ -122,20 +136,22 @@ class CreateTable(Table):
 class Load(Task):
     def __init__(self, uri, params=None, source=None):
         super().__init__()
+        if isinstance(params, dict):
+            params = list(params.items())
         self.uri = uri
-        self.params = params or {}
+        self.params = params or []
         self.source = source or uri
 
     def _run(self, ctx: Context, prev: DataTable):
-        params = {}
+        params = []
         row = None
-        for k, v in self.params.items():
+        for k, v in self.params:
             if isinstance(v, Field):
                 if row is None:
                     row = next(iter(prev), [])
-                params[k] = v.resolve(prev, row)
+                params.append((k, v.resolve(prev, row)))
             else:
-                params[k] = v
+                params.append((k, v))
         return ctx.load(self.uri, params)
     
     def __repr__(self):
@@ -196,17 +212,27 @@ class Condition:
 
 
 class Map(Task):
-    def __init__(self, fields, source=None):
+    def __init__(self, fields, source=None, append=False):
         super().__init__()
-        self.fields = {k: f if isinstance(f, Field) else Field(f) for k, f in fields.items()}
+        self.fields = fields
         self.source = source
+        self.append = append
 
     def _run(self, ctx: Context, prev: DataTable):
-        rows = [tuple(f.resolve(prev, row) for f in self.fields.values()) for row in prev]
-        return DataTable(self.fields.keys(), rows, self.source)
+        def rows():
+            for row in prev:
+                _row = tuple(f.resolve(prev, row) if isinstance(f, Field) else f for f in self.fields.values())
+                if self.append:
+                    yield row + _row
+                else:
+                    yield _row
+        cols = [(self.source, f) for f in self.fields.keys()]
+        if self.append:
+            cols = prev.cols + cols
+        return DataTable(cols, rows())
 
     def __repr__(self):
-        return f"Map({repr(self.fields)})"
+        return f"Map({repr(self.fields)}, append={self.append})"
 
 
 class Intersection(Task):
@@ -268,23 +294,73 @@ class Join(Task):
         joincols = None
         iterators= []
         for row in prev:
-            related = self.tasks.run(ctx, DataTable(prev.cols, [row]))
-            if joincols is None:
-                joincols = related.cols
-            elif joincols != related.cols:
-                raise ValueError("Incompatible columns")
-            
-            if related.is_empty():
-                if self.left:
-                    iterators.append([row + tuple([None] * len(joincols))])
-            else:
-                iterators.append([row + r for r in related])
+            with join_context((prev, row)):
+                related = self.tasks.run(ctx, DataTable(prev.cols, [row]))
+                if joincols is None:
+                    joincols = related.cols
+                elif joincols != related.cols:
+                    raise ValueError("Incompatible columns")
+                
+                if related.is_empty():
+                    if self.left:
+                        iterators.append([row + tuple([None] * len(joincols))])
+                else:
+                    iterators.append(list([row + r for r in related]))
         return DataTable(prev.cols + joincols, itertools.chain.from_iterable(iterators))
     
     def __repr__(self):
         return f"{self.__class__.__name__}\n" + textwrap.indent(repr(self.tasks), "  ")
-    
 
+            
+class _JoinContext:
+    """A per-thread stack of Session to keep track of the current session"""
+
+    def __init__(self):
+        self.locals = threading.local()
+
+    @property
+    def stack(self):
+        if not hasattr(self.locals, "stack"):
+            self.locals.stack = []
+        return self.locals.stack
+
+    @property
+    def top(self):
+        if self.stack:
+            return self.stack[-1]
+
+    def push(self, dt):
+        self.stack.append(dt)
+
+    def pop(self):
+        self.stack.pop()
+
+    @contextmanager
+    def __call__(self, dt):
+        self.push(dt)
+        try:
+            yield dt
+        finally:
+            self.pop()
+    
+    
+join_context = _JoinContext()
+        
+    
+class JointField(Field):
+    def __init__(self, field):
+        self.field = field
+
+    def resolve(self, dt, row):
+        return self.field.resolve(*join_context.top)
+
+    def __repr__(self):
+        return f"JointField({repr(self.field)})"
+    
+    def __eq__(self, other):
+        return self.__class__ == other.__class__ and self.field == other.field
+
+                    
 class Expand(Task):
     def __init__(self, field, key_field=None, value_field=None, source=None):
         super().__init__()
@@ -322,6 +398,9 @@ class Expand(Task):
             row.pop(idx)
             yield tuple(row) + tuple(fields.get(f) for f in new_cols)
     
+    def __repr__(self):
+        return f"{self.__class__.__name__}({repr(self.field)})"
+    
 
 class Unnest(Task):
     def __init__(self, field, source=None):
@@ -354,6 +433,9 @@ class Unnest(Task):
                     if f not in new_cols:
                         new_cols.append(f)
                 yield row + tuple(item.get(f) for f in new_cols)
+    
+    def __repr__(self):
+        return f"{self.__class__.__name__}({repr(self.field)})"
 
 
 class Aggregate(Task):

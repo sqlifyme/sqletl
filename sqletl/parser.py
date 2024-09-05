@@ -1,5 +1,5 @@
 from postgres_proto.sql import Parser as BaseParser
-from postgres_proto.sql.tokenizer import unquote, split_sql, tokenize_list
+from postgres_proto.sql.tokenizer import unquote, split_sql, tokenize_list, tokenize
 import re
 from . import ast
 
@@ -22,23 +22,37 @@ class Parser(BaseParser):
             from_=info.tables,
             where=self.parse_where(info.where) if info.where else None,
             order_by=list(self.parse_order_by(info.order_by)) if info.order_by else None,
+            group_by=ast.SQLExpr(info.group_by) if info.group_by else None,
+            window=ast.SQLExpr(info.window) if info.window else None,
             distinct=info.distinct,
             limit=info.limit,
             offset=info.offset
         )
 
     def parse_select_cols(self, sql):
-        for info in super().parse_select_cols(sql):
-            if info.name == "*":
+        for col_expr, _ in tokenize_list(sql):
+            if not col_expr:
+                continue
+            over_parts = split_sql(f"SELECT {col_expr}", ("SELECT", "FILTER", "OVER"))
+            over = None
+            if "OVER" in over_parts:
+                name, schema = self.parse_identifier_schema(over_parts["SELECT"])
+                over, alias = self.split_alias(tokenize(over_parts["OVER"]))
+                over = (over, over_parts.get("FILTER"))
+            else:
+                name, schema, alias = self.parse_identifier(col_expr, group_delimiters=(('(', ')'), ('CASE ', ' END')))
+            if name == "*":
                 yield None
                 continue
-            if re.match("[a-z0-9_]+\(", info.name, re.I):
-                name, args = self.parse_sql_func(info.name)
+            if re.match("[a-z0-9_]+\(", name, re.I):
+                name, args = self.parse_sql_func(name)
                 field = ast.Function(name.upper(), [self.parse_expr(e) for e in args])
             else:
-                field = ast.Field(info.name, info.schema)
-            if info.alias:
-                yield ast.Alias(info.alias, field)
+                field = ast.Field(name, schema)
+            if over:
+                field = ast.WindowFunction(field, *over)
+            if alias:
+                yield ast.Alias(alias, field)
             else:
                 yield field
 
@@ -81,6 +95,8 @@ class Parser(BaseParser):
         if re.match("[a-z0-9_]+\(", expr, re.I):
             name, args = self.parse_sql_func(expr)
             return ast.Function(name.upper(), [self.parse_expr(e) for e in args])
+        if expr.startswith("(") and expr.endswith(")"):
+            return ast.SQLExpr(expr)
         name, schema, alias = self.parse_identifier(expr)
         if name.startswith("?"):
             return ast.QueryField(name[1:], schema)

@@ -17,11 +17,11 @@ def test_simple():
     )
 
     assert plan(ast) == pl.Pipeline([
-        pl.Load('https://geo.api.gouv.fr/communes', {'codePostal': '92160'}),
-        pl.Map({
-            'nom': pl.Field('nom'),
-            'population': pl.Field('population')
-        }),
+        pl.Table('https://geo.api.gouv.fr/communes', [
+            pl.Load('https://geo.api.gouv.fr/communes', {'codePostal': '92160'}),
+            pl.Map({"?codePostal": "92160"}, append=True)
+        ]),
+        pl.Map({'nom': pl.Field('nom'), 'population': pl.Field('population')}),
         pl.Sort([(pl.Field('population'), 'DESC')])
     ])
 
@@ -42,12 +42,11 @@ def test_simple2():
     )
 
     assert plan(ast) == pl.Pipeline([
-        pl.Load('https://geo.api.gouv.fr/communes', {'codePostal': '92160'}),
-        pl.Filter([pl.Condition(pl.Field('nom'), '=', 'Antony')]),
-        pl.Map({
-            'nom': pl.Field('nom'),
-            'population': pl.Field('population')
-        })
+        pl.Table('https://geo.api.gouv.fr/communes', [
+            pl.Load('https://geo.api.gouv.fr/communes', {'codePostal': '92160'}),
+            pl.Map({"?codePostal": "92160"}, append=True)
+        ]),
+        pl.SQL('SELECT "nom", "population" FROM "data" WHERE "nom" = Antony')
     ])
 
 
@@ -70,19 +69,19 @@ def test_or_condition():
     )
 
     assert plan(ast) == pl.Pipeline([
-        pl.Union(
-            [
-                pl.Load('https://geo.api.gouv.fr/communes', {'codePostal': '92160'})
-            ],
-            [
-                pl.Load('https://geo.api.gouv.fr/communes', {'codePostal': '75008'})
-            ]
-        ),
-        pl.Filter([pl.Condition(pl.Field('population'), '>', "50000")]),
-        pl.Map({
-            'nom': pl.Field('nom'),
-            'population': pl.Field('population')
-        })
+        pl.Table('https://geo.api.gouv.fr/communes', [
+            pl.Union(
+                [
+                    pl.Load('https://geo.api.gouv.fr/communes', {'codePostal': '92160'}),
+                    pl.Map({"?codePostal": "92160"}, append=True)
+                ],
+                [
+                    pl.Load('https://geo.api.gouv.fr/communes', {'codePostal': '75008'}),
+                    pl.Map({"?codePostal": "75008"}, append=True)
+                ]
+            )
+        ]),
+        pl.SQL('SELECT "nom", "population" FROM "data" WHERE (("?codePostal" = 92160 AND "population" > 50000) OR ("?codePostal" = 75008 AND "population" > 50000))')
     ])
 
 
@@ -112,15 +111,15 @@ def test_cte():
 
     assert plan(ast) == pl.Pipeline([
         pl.CreateTable("communes", [
-            pl.Load('https://geo.api.gouv.fr/communes'),
-            pl.Map({
-                'nom': pl.Field('nom'),
-                'population': pl.Field('population')
-            })
+            pl.Table('https://geo.api.gouv.fr/communes', [
+                pl.Load('https://geo.api.gouv.fr/communes')
+            ]),
+            pl.Map({'nom': pl.Field('nom'), 'population': pl.Field('population')})
         ]),
-        pl.Load("communes"),
-        pl.Filter([pl.Condition(pl.Field('population'), '>', 50000)]),
-        pl.Map({'nom': pl.Field('nom')})
+        pl.Table('communes', [
+            pl.Load("communes")
+        ]),
+        pl.SQL('SELECT "nom" FROM "data" WHERE "population" > 50000')
     ])
 
 
@@ -142,17 +141,16 @@ def test_single_join_via_query():
 
     assert plan(ast) == pl.Pipeline([
         pl.Table("addr", [
-            pl.Load('https://api-adresse.data.gouv.fr/search#features', {'q': '31 av gallieni 92160 antony'})
+            pl.Load('https://api-adresse.data.gouv.fr/search#features', {'q': '31 av gallieni 92160 antony'}),
+            pl.Map({"?q": '31 av gallieni 92160 antony'}, append=True)
         ]),
         pl.Join([
             pl.Table("c", [
-                pl.Load('https://geo.api.gouv.fr/communes', {'codePostal': pl.Field('properties->postcode', 'addr')})
+                pl.Load('https://geo.api.gouv.fr/communes', {'codePostal': pl.Field('properties->postcode', 'addr')}),
+                pl.Map({"?codePostal": pl.JointField(pl.Field('properties->postcode', 'addr'))}, append=True)
             ])
         ]),
-        pl.Map({
-            'nom': pl.Field('nom', 'c'),
-            'population': pl.Field('population', 'c')
-        })
+        pl.Map({'nom': pl.Field('nom', 'c'), 'population': pl.Field('population', 'c')})
     ])
 
 
@@ -169,11 +167,15 @@ def test_single_join_via_condition():
     )
 
     assert plan(ast) == pl.Pipeline([
-        pl.Load("t1"),
-        pl.Join([
-            pl.Load('t2'),
+        pl.Table("t1", [
+            pl.Load("t1")
         ]),
-        pl.Filter([pl.Condition(pl.Field('c1', 't1'), '=', pl.Field('c2', 't2'))])
+        pl.Join([
+            pl.Table("t2", [
+                pl.Load('t2')
+            ]),
+            pl.Filter([pl.Condition(pl.Field('c1', 't1'), '=', pl.Field('c2', 't2'))])
+        ])
     ])
 
 
@@ -207,19 +209,22 @@ def test_cte_join():
 
     assert plan(ast) == pl.Pipeline([
         pl.CreateTable("addr", [
-            pl.Load('https://api-adresse.data.gouv.fr/search#features', {'q': '31 av gallieni 92160 antony'}),
+            pl.Table("https://api-adresse.data.gouv.fr/search#features", [
+                pl.Load('https://api-adresse.data.gouv.fr/search#features', {'q': '31 av gallieni 92160 antony'}),
+                pl.Map({"?q": '31 av gallieni 92160 antony'}, append=True)
+            ]),
             pl.Map({'postcode': pl.Field('properties->postcode')})
         ]),
-        pl.Load("addr"),
+        pl.Table("addr", [
+            pl.Load("addr")
+        ]),
         pl.Join([
             pl.Table("c", [
                 pl.Load('https://geo.api.gouv.fr/communes', {'codePostal': pl.Field('postcode', 'addr')}),
+                pl.Map({"?codePostal": pl.JointField(pl.Field('postcode', 'addr'))}, append=True)
             ]),
         ]),
-        pl.Map({
-            'nom': pl.Field('nom', 'c'),
-            'population': pl.Field('population', 'c')
-        })
+        pl.Map({'nom': pl.Field('nom', 'c'), 'population': pl.Field('population', 'c')})
     ])
 
 

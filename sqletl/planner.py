@@ -2,6 +2,13 @@ from . import ast
 from . import pipeline
 
 
+AGGREGATE_FUNCS = ("COUNT", "SUM", "AVG", "MIN", "MAX", "TOTAL", "GROUP_CONCAT", "STRING_AGG")
+
+
+class PlannerError(Exception):
+    pass
+
+
 def plan(node):
     if isinstance(node, ast.Select):
         tasks = walk_select(node)
@@ -12,113 +19,6 @@ def plan(node):
     return pipeline.Pipeline(tasks)
 
 
-def walk_select(node):
-    if not node.from_:
-        froms = {None: ast.Table("__postgres__")}
-    else:
-        froms = walk_from(node.from_)
-
-    tasks = []
-    if node.where:
-        tasks.extend(walk_condition(node.where, froms))
-    elif isinstance(froms[None], list):
-        tasks.extend(load_join(froms, None))
-    else:
-        tasks.extend(load_src(froms[None]))
-
-    mapping = {}
-    aggregs = {}
-    expands = []
-    for field in node.fields:
-        alias = None
-        if isinstance(field, ast.Alias):
-            alias = field.alias
-            field = field.node
-        if isinstance(field, ast.Function):
-            if not alias:
-                alias = field.func.lower()
-            if field.func == "EXPAND":
-                args = [pipeline.Field(field.args[0].path, field.args[0].source)] + [a.value for a in field.args[1:]]
-                mapping[args[0].name] = args[0]
-                expands.append(pipeline.Expand(*args))
-            elif field.func == "UNNEST":
-                field = pipeline.Field(field.args[0].path, field.args[0].source)
-                mapping[field.name] = field
-                expands.append(pipeline.Unnest(field))
-            elif field.func.lower() in pipeline.Aggregate.funcs:
-                aggregs[alias] = [field.func.lower(), pipeline.Field(field.args[0].path, field.args[0].source)]
-            else:
-                raise Exception(f"Unknown function: {field.func}")
-        else:
-            if not alias:
-                alias = field.path
-            mapping[alias] = pipeline.Field(field.path, field.source)
-
-    limit_task = None
-    if node.limit:
-        limit_task = pipeline.Limit(node.limit)
-
-    if aggregs:
-        tasks.append(pipeline.Aggregate(mapping, aggregs))
-        if limit_task:
-            tasks.append(limit_task)
-    elif mapping:
-        if limit_task:
-            tasks.append(limit_task)
-        tasks.append(pipeline.Map(mapping))
-    if expands:
-        tasks.extend(expands)
-
-    if node.distinct:
-        tasks.append(pipeline.Distinct())
-
-    if node.order_by:
-        tasks.append(pipeline.Sort([(pipeline.Field(field.path, field.source), d) for field, d in node.order_by]))
-
-    return tasks
-
-
-def walk_from(froms):
-    out = {}
-    for node in froms:
-        if isinstance(node, ast.Join):
-            tables = walk_join(node)
-            if not out:
-                out[None] = tables
-            for alias, table, on in tables:
-                out[alias] = tables
-        else:
-            alias, node = walk_source(node)
-            if not out:
-                out[None] = node
-            out[alias] = node
-    return out
-
-
-def walk_source(node):
-    alias = None
-    if isinstance(node, ast.Alias):
-        alias = node.alias
-        node = node.node
-    if not alias:
-        if isinstance(node, ast.URL):
-            alias = node.url
-        else:
-            alias = node.name
-    return alias, node
-
-
-def walk_join(node):
-    if not isinstance(node, ast.Join):
-        alias, node = walk_source(node)
-        return [[alias, node, None]]
-    alias, n = walk_source(node.left)
-    tables = [[alias, n, None]]
-    tables.extend(walk_join(node.right))
-    tables[1][2] = node.on
-    return tables
-
-
 def walk_with(node):
     tasks = []
     for name, query in node.tables.items():
@@ -127,123 +27,263 @@ def walk_with(node):
     return tasks
 
 
-def load_src(node, params=None, alias=None):
-    if isinstance(node, ast.URL):
-        tasks = [pipeline.Load(node.url, params)]
-    else:
-        tasks = [pipeline.Load(node.name, params)]
-        if alias and alias == node.name:
-            return tasks
-    if alias:
-        return [pipeline.Table(alias, tasks)]
-    return tasks
-
-
-def load_join(froms, src, queries=None, filters=None, ignore=None):
-    queries = queries or {}
+def walk_select(select):
     tasks = []
-    for alias, table, on in froms[src]:
-        if ignore is not None:
-            ignore.add(alias)
-        _tasks = []
-        if on:
-            q, g, f = split_and(ast.And([on]), froms)
-            if q:
-                params = dict(queries.get(alias, {}), **q.popitem()[1])
-            else:
-                params = queries.get(alias, {})
-            _tasks = [pipeline.Join(load_src(table, params, alias))]
-            if filters and alias in filters:
-                _tasks.append(pipeline.Filter(filters.pop(alias)))
-            tasks.append(pipeline.Table(alias, _tasks))
-        else:
-            _tasks = load_src(table, queries.get(alias, {}), alias)
-            if filters and alias in filters:
-                _tasks.append(pipeline.Filter(filters.pop(alias)))
-            tasks.extend(_tasks)
-    return tasks
-
-
-def walk_condition(condition, froms):
-    if isinstance(condition, ast.Condition):
-        return walk_condition(ast.And([condition]), froms)
-    
-    if isinstance(condition, ast.And):
-        queries, groups, filters = split_and(condition, froms)
-
-        ignore = set()
-        for src, params in queries.items():
-            if src in ignore:
-                continue
-            if isinstance(froms[src], list):
-                groups.append(load_join(froms, src, queries, filters, ignore))
-            else:
-                groups.append(load_src(froms[src], params, src))
-
-        if not groups:
-            groups.append(load_src(froms[None]))
-
-        if len(groups) > 1:
-            tasks = [pipeline.Intersection(*groups)]
-        else:
-            tasks = groups[0]
-
-        if filters:
-            return tasks + [pipeline.Filter(filters.popitem()[1])]
-        return tasks
-
-    if isinstance(condition, ast.Or):
-        groups = []
-        for node in condition.nodes:
-            if isinstance(condition, ast.Condition):
-                p, f, j = split_condition(node)
-                if p:
-                    src, params = p.popitem()
-                    groups.append(load_src(froms[src], params, src))
-                else:
-                    src, filters = f.popitem()
-                    groups.append(
-                        load_src(froms[src], alias=src) + [pipeline.Filter(filters)]
-                    )
-            else:
-                groups.append(walk_condition(node, froms))
-        if len(groups) > 1:
-            return [pipeline.Union(*groups)]
-        return groups[0]
-    
-
-def split_and(and_node, froms):
     queries = {}
-    groups = []
-    filters = {}
-    for node in and_node.nodes:
-        if isinstance(node, ast.Condition):
-            p, f, j = split_condition(node)
-            for k, v in p.items():
-                queries.setdefault(k, {}).update(v)
-            for k, v in f.items():
-                filters.setdefault(k, []).extend(v)
+    filters = None
+    has_where = False
+        
+    if len(select.from_) > 1:
+        raise PlannerError("Multiple sources in FROM clause are not supported, use JOIN instead")
+
+    # first with process the WHERE clause into a list of queries and filters
+    # WHERE clause can contain query params mixed in bool expressions
+    # ?param1 OR ?param2 will need 2 queries to be resolved
+    if select.where:
+        queries, filters = extract_bool_expr_queries(select.where)
+        has_where = len(filters.nodes) > 1 or any([not isinstance(n, ast.Condition) or n.operator not in pipeline.Condition.operators for _and in filters.nodes for n in _and.nodes])
+
+    # using the FROM clause we build an ordered list of queries to perform
+    sources = []
+    for node in select.from_:
+        if isinstance(node, ast.Join):
+            joins = []
+            left = walk_join(node, joins)
+            sources.append(list(split_identifier(left)) + [None])
+            sources.extend(reversed(joins))
         else:
-            groups.append(walk_condition(node, froms))
-    return queries, groups, filters
+            sources.append(list(split_identifier(node)) + [None])
+    
+    if None in queries and len([s for s in sources if not s[0]]) > 1:
+        raise PlannerError("Cannot use multiple unaliases sources in FROM clause when using unidentified query params")
 
+    for alias, source, source_filters in sources:
+        table_tasks = []
+        source_queries = None
+        source_params = []
 
-def split_condition(condition):
-    params = {}
-    filters = {}
-    joins = {}
-    if isinstance(condition.left, ast.QueryField):
-        params.setdefault(condition.left.source, {})[condition.left.path] = convert_operand(condition.right)
-    elif isinstance(condition.left, ast.Field):
-        filters.setdefault(condition.left.source, []).append(
-            pipeline.Condition(convert_operand(condition.left), condition.operator, convert_operand(condition.right)))
+        if source_filters:
+            # this is a joint source
+            # we also resolve its ON condition to potentially mutliple queries (same as WHERE)
+            source_queries, source_filters = extract_bool_expr_queries(source_filters)
+            if len(source_filters.nodes) > 1:
+                raise PlannerError("OR expressions in JOIN's ON conditions are not supported")
+            
+        if source_queries and len(list(source_queries.values())[0]) > 1:
+            raise PlannerError("OR expressions in JOIN's ON conditions are not supported")
+        elif source_queries:
+            # only one query is allowd in the ON clause, retrieve its params
+            source_params = list(source_queries.values())[0][0]
+    
+        if alias in queries:
+            # the WHERE clause contains queries for this source
+            for params in queries[alias]:
+                table_tasks.append(create_source(source, params + source_params))
+        else:
+            table_tasks.append(create_source(source, source_params))
+        
+        if len(table_tasks) > 1:
+            table_tasks = [pipeline.Union(*table_tasks)]
+        else:
+            table_tasks = table_tasks[0]
+        table = pipeline.Table(alias or source, table_tasks)
+        if source_filters and source_filters.nodes:
+            source_filters = walk_comparisons(source_filters.nodes[0].nodes, remove_query_fields=True)
+            table = pipeline.Join([table] + ([source_filters] if source_filters else []))
+        tasks.append(table)
+
+    # we now process the SELECT clause
+    fields = []
+    expands = []
+    has_select = False
+    has_aggregates = False
+    for field in select.fields:
+        alias = None
+        if isinstance(field, ast.Alias):
+            alias = field.alias
+            field = field.node
+        if isinstance(field, ast.Function):
+            if field.func == "EXPAND":
+                args = [pipeline.Field(field.args[0].path)] + [a.value for a in field.args[1:]]
+                expands.append(pipeline.Expand(*args))
+                field = field.args[0]
+            elif field.func == "UNNEST":
+                args = [pipeline.Field(field.args[0].path)]
+                expands.append(pipeline.Unnest(*args))
+                field = field.args[0]
+            elif field.func in AGGREGATE_FUNCS:
+                has_aggregates = True
+                has_select = True
+            else:
+                has_select = True
+        elif not isinstance(field, ast.Field):
+            has_select = True
+        if alias:
+            field = ast.Alias(alias, field)
+        fields.append(field)
+            
+    if has_aggregates and expands:
+        raise PlannerError("Aggregates and EXPAND/UNNEST functions are not supported together")
+
+    if filters:
+        filters = walk_filters(filters)
+    require_sql = has_select or filters or select.group_by or select.window
+    if require_sql and (not expands or filters or has_select):
+        # the query contains pieces that need to be processed using a real SQL enfine
+        # we partially rebuild the SQL statement
+        sql = ast.Select(fields, from_=[ast.Table("data")], where=filters)
+        if not expands:
+            sql.group_by = select.group_by
+            sql.window = select.window
+            sql.distinct = select.distinct
+            sql.order_by = select.order_by
+            sql.limit = select.limit
+            sql.offset = select.offset
+        tasks.append(pipeline.SQL(str(sql)))
     else:
-        filters.setdefault(condition.right.source, []).append(
-            pipeline.Condition(convert_operand(condition.right), condition.operator, convert_operand(condition.left)))
-    return [params, filters, joins]
+        if filters and filters.nodes:
+            tasks.append(walk_comparisons(filters.nodes[0].nodes))
+        if fields:
+            mapping = {}
+            for field in fields:
+                alias, field = split_alias(field)
+                mapping[alias or field.path] = convert_operand(field)
+            tasks.append(pipeline.Map(mapping))
+
+    if expands:
+        tasks.extend(expands)
+    
+    if expands and require_sql:
+        sql = ast.Select([], from_=[ast.Table("data")])
+        sql.group_by = select.group_by
+        sql.window = select.window
+        sql.distinct = select.distinct
+        sql.order_by = select.order_by
+        sql.limit = select.limit
+        sql.offset = select.offset
+        tasks.append(pipeline.SQL(str(sql)))
+    elif not require_sql:
+        if select.distinct:
+            tasks.append(pipeline.Distinct())
+        if select.order_by:
+            tasks.append(pipeline.Sort([(pipeline.Field(field.path, field.source), d) for field, d in select.order_by]))
+
+    return tasks
+            
+
+def create_source(source, params):
+    tasks = [pipeline.Load(source, params)]
+    if params:
+        params = [(f"?{name}", pipeline.JointField(value) if isinstance(value, pipeline.Field) else value) for name, value in params]
+        tasks.append(pipeline.Map(dict(params), append=True))
+    return tasks
+       
+
+def walk_join(node, sources):
+    if isinstance(node.right, ast.Join):
+        left = walk_join(node.right, sources)
+        sources.insert(0, list(split_identifier(left)) + [node.on])
+    else:
+        sources.insert(0, list(split_identifier(node.right)) + [node.on])
+    return node.left
+
+
+def walk_filters(or_node):
+    remove_query_fields = len(or_node.nodes) <= 1
+    _or = {}
+    for _and in or_node.nodes:
+        nodes = []
+        for node in _and.nodes:
+            if isinstance(node, ast.Condition) and isinstance(node.left, ast.QueryField):
+                if not remove_query_fields:
+                    node.left = ast.Field(f"{node.left.source}__?{node.left.path}" if node.left.source else f"?{node.left.path}")
+                    nodes.append(node)
+            elif isinstance(node, ast.Condition) and isinstance(node.left, ast.Field):
+                node.left = ast.Field(f"{node.left.source}__{node.left.path}" if node.left.source else node.left.path)
+                nodes.append(node)
+            else:
+                nodes.append(node)
+        if nodes:
+            _and = ast.And(nodes)
+            _or[str(_and)] = _and
+    if not _or:
+        return None
+    return ast.Or(list(_or.values()))
+        
+    
+def walk_comparisons(comparisons, remove_query_fields=False):
+    out = pipeline.Filter([])
+    for comp in comparisons:
+        if remove_query_fields and isinstance(comp.left, ast.QueryField):
+            continue
+        out.conditions.append(
+            pipeline.Condition(convert_operand(comp.left), comp.operator, convert_operand(comp.right))
+        )
+    if not out.conditions:
+        return
+    return out
+
+        
+def split_alias(node):
+    if isinstance(node, ast.Alias):
+        return node.alias, node.node
+    return None, node
+
+
+def split_identifier(node):
+    alias, node = split_alias(node)
+    return alias, node.url if isinstance(node, ast.URL) else node.name
+            
+
+def expand_bool_expr(node):
+    """Expand (in the mathematical sense) a boolean expression
+    Example: a AND (b OR c) => (a AND b) OR (a AND c)
+    """
+    if not isinstance(node, (ast.And, ast.Or)):
+        return ast.Or([ast.And([node])])
+    if isinstance(node, ast.Or):
+        o = []
+        for n in node.nodes:
+            o.extend(expand_bool_expr(n).nodes)
+        return ast.Or(o)
+    _or = ast.Or([])
+    for node in node.nodes:
+        if isinstance(node, (ast.And, ast.Or)):
+            o = ast.Or([])
+            for _and in expand_bool_expr(node).nodes:
+                for _and2 in _or.nodes:
+                    _and.nodes = _and2.nodes + _and.nodes
+                o.nodes.append(_and)
+            _or = o
+        elif not _or.nodes:
+            _or.nodes.append(ast.And([node]))
+        else:
+            for _and in _or.nodes:
+                _and.nodes.append(node)
+    return _or
+
+
+def extract_bool_expr_queries(node):
+    bool_expr = expand_bool_expr(node)
+    queries = {}
+    max_queries = 0
+    for _and in bool_expr.nodes:
+        _params = {}
+        for node in _and.nodes:
+            if isinstance(node, ast.Condition) and isinstance(node.left, ast.QueryField):
+                _params.setdefault(node.left.source, []).append((node.left.path, convert_operand(node.right)))
+        for source, p in _params.items():
+            queries.setdefault(source, []).append(p)
+            max_queries = max([max_queries, len(queries[source])])
+    for source, params in queries.items():
+        if len(params) < max_queries:
+            queries[source].append([])
+    return queries, bool_expr
 
 
 def convert_operand(field):
+    if isinstance(field, ast.QueryField):
+        return pipeline.Field(f"?{field.path}", field.source)
     if isinstance(field, ast.Field):
         return pipeline.Field(field.path, field.source)
     if isinstance(field, ast.Scalar):

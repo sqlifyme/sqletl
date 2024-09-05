@@ -39,3 +39,6 @@ class Context:
         if name not in self.tables:
             raise ContextError(f"Table {name} not found")
         return self.tables[name]
+
+    def get_tables(self):
+        return self.tables
