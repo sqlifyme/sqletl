@@ -30,11 +30,13 @@ class DataTable:
     def refresh_indexes(self):
         self.idx_by_sources = {}
         self.idx_by_unique_names = {}
+        self.source_by_unique_names = {}
         self.colnames = [c[1] for c in self.cols]
         self.prefixed_cols = []
         for i, (src, col) in enumerate(self.cols):
             self.idx_by_sources.setdefault(src, {})[col] = i
             self.idx_by_unique_names.setdefault(col, i)
+            self.source_by_unique_names[col] = src
             self.prefixed_cols.append(src + '__' + col if src else col)
 
     def colidx(self, col, source=None):

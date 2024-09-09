@@ -31,7 +31,6 @@ def walk_select(select):
     tasks = []
     queries = {}
     filters = None
-    has_where = False
         
     if len(select.from_) > 1:
         raise PlannerError("Multiple sources in FROM clause are not supported, use JOIN instead")
@@ -41,7 +40,6 @@ def walk_select(select):
     # ?param1 OR ?param2 will need 2 queries to be resolved
     if select.where:
         queries, filters = extract_bool_expr_queries(select.where)
-        has_where = len(filters.nodes) > 1 or any([not isinstance(n, ast.Condition) or n.operator not in pipeline.Condition.operators for _and in filters.nodes for n in _and.nodes])
 
     # using the FROM clause we build an ordered list of queries to perform
     sources = []
@@ -89,8 +87,11 @@ def walk_select(select):
         table = pipeline.Table(alias or source, table_tasks)
         if source_filters and source_filters.nodes:
             source_filters = walk_comparisons(source_filters.nodes[0].nodes, remove_query_fields=True)
-            table = pipeline.Join([table] + ([source_filters] if source_filters else []))
-        tasks.append(table)
+            tasks.append(pipeline.Join([table]))
+            if source_filters:
+                tasks.append(source_filters)
+        else:
+            tasks.append(table)
 
     # we now process the SELECT clause
     fields = []
@@ -126,12 +127,15 @@ def walk_select(select):
         raise PlannerError("Aggregates and EXPAND/UNNEST functions are not supported together")
 
     if filters:
-        filters = walk_filters(filters)
-    require_sql = has_select or filters or select.group_by or select.window
-    if require_sql and (not expands or filters or has_select):
+        filters = discard_filter_query_fields(filters)
+    
+    has_where = filters and (len(filters.nodes) > 1 or any([not isinstance(n, ast.Condition) or n.operator not in pipeline.Condition.operators\
+                                                            for _and in filters.nodes for n in _and.nodes]))
+    require_sql = has_select or has_where or select.group_by or select.window
+    if require_sql and not expands:
         # the query contains pieces that need to be processed using a real SQL enfine
         # we partially rebuild the SQL statement
-        sql = ast.Select(fields, from_=[ast.Table("data")], where=filters)
+        sql = ast.Select(fields, from_=[ast.Table("data")], where=walk_filters(filters) if filters else None)
         if not expands:
             sql.group_by = select.group_by
             sql.window = select.window
@@ -188,27 +192,32 @@ def walk_join(node, sources):
     return node.left
 
 
-def walk_filters(or_node):
-    remove_query_fields = len(or_node.nodes) <= 1
+def discard_filter_query_fields(or_node):
+    if len(or_node.nodes) > 1:
+        return or_node
     _or = {}
     for _and in or_node.nodes:
         nodes = []
         for node in _and.nodes:
             if isinstance(node, ast.Condition) and isinstance(node.left, ast.QueryField):
-                if not remove_query_fields:
-                    node.left = ast.Field(f"{node.left.source}__?{node.left.path}" if node.left.source else f"?{node.left.path}")
-                    nodes.append(node)
-            elif isinstance(node, ast.Condition) and isinstance(node.left, ast.Field):
-                node.left = ast.Field(f"{node.left.source}__{node.left.path}" if node.left.source else node.left.path)
-                nodes.append(node)
-            else:
-                nodes.append(node)
+                continue
+            nodes.append(node)
         if nodes:
             _and = ast.And(nodes)
             _or[str(_and)] = _and
     if not _or:
         return None
     return ast.Or(list(_or.values()))
+
+
+def walk_filters(or_node):
+    for _and in or_node.nodes:
+        for node in _and.nodes:
+            if isinstance(node, ast.Condition) and isinstance(node.left, ast.QueryField):
+                node.left = ast.Field(f"{node.left.source}__?{node.left.path}" if node.left.source else f"?{node.left.path}")
+            elif isinstance(node, ast.Condition) and isinstance(node.left, ast.Field):
+                node.left = ast.Field(f"{node.left.source}__{node.left.path}" if node.left.source else node.left.path)
+    return or_node
         
     
 def walk_comparisons(comparisons, remove_query_fields=False):

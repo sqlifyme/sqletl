@@ -84,7 +84,10 @@ class Parser(BaseParser):
         return where
         
     def parse_condition(self, sql):
+        sql = sql.replace("->>", "$JSONTEXTACCESSOR$").replace("->", "$JSONACCESSOR$")
         left, op, right = super().parse_condition(sql)
+        left = left.replace("$JSONTEXTACCESSOR$", "->>").replace("$JSONACCESSOR$", "->")
+        right = right.replace("$JSONTEXTACCESSOR$", "->>").replace("$JSONACCESSOR$", "->")
         return ast.Condition(self.parse_expr(left), op, self.parse_expr(right))
     
     def parse_expr(self, expr):

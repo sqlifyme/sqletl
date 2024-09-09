@@ -150,6 +150,8 @@ class Scalar(Node):
         self.value = value
 
     def __str__(self):
+        if isinstance(self.value, str):
+            return f"'{self.value}'"
         return str(self.value)
 
 

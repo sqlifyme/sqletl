@@ -46,7 +46,8 @@ def test_simple2():
             pl.Load('https://geo.api.gouv.fr/communes', {'codePostal': '92160'}),
             pl.Map({"?codePostal": "92160"}, append=True)
         ]),
-        pl.SQL('SELECT "nom", "population" FROM "data" WHERE "nom" = Antony')
+        pl.Filter([pl.Condition(pl.Field('nom'), '=', 'Antony')]),
+        pl.Map({'nom': pl.Field('nom'), 'population': pl.Field('population')})
     ])
 
 
@@ -64,7 +65,7 @@ def test_or_condition():
                 Condition(QueryField("codePostal"), "=", Scalar("92160")),
                 Condition(QueryField("codePostal"), "=", Scalar("75008")),
             ]),
-            Condition(Field("population"), ">", Scalar("50000"))
+            Condition(Field("population"), ">", Scalar(50000))
         ])
     )
 
@@ -81,7 +82,7 @@ def test_or_condition():
                 ]
             )
         ]),
-        pl.SQL('SELECT "nom", "population" FROM "data" WHERE (("?codePostal" = 92160 AND "population" > 50000) OR ("?codePostal" = 75008 AND "population" > 50000))')
+        pl.SQL("""SELECT "nom", "population" FROM "data" WHERE (("?codePostal" = '92160' AND "population" > 50000) OR ("?codePostal" = '75008' AND "population" > 50000))""")
     ])
 
 
@@ -108,7 +109,7 @@ def test_cte():
             where=Condition(Field("population"), ">", Scalar(50000))
         )
     )
-
+    
     assert plan(ast) == pl.Pipeline([
         pl.CreateTable("communes", [
             pl.Table('https://geo.api.gouv.fr/communes', [
@@ -119,7 +120,8 @@ def test_cte():
         pl.Table('communes', [
             pl.Load("communes")
         ]),
-        pl.SQL('SELECT "nom" FROM "data" WHERE "population" > 50000')
+        pl.Filter([pl.Condition(pl.Field('population'), '>', 50000)]),
+        pl.Map({'nom': pl.Field('nom')})
     ])
 
 
@@ -244,13 +246,16 @@ def test_single_join_multi_select():
         ],
         where=Condition(QueryField("q", "addr"), "=", Scalar("31 av gallieni 92160 antony"))
     )
+    
     assert plan(ast) == pl.Pipeline([
         pl.Table("addr", [
-            pl.Load('https://api-adresse.data.gouv.fr/search#features', {'q': '31 av gallieni 92160 antony'})
+            pl.Load('https://api-adresse.data.gouv.fr/search#features', {'q': '31 av gallieni 92160 antony'}),
+            pl.Map({"?q": '31 av gallieni 92160 antony'}, append=True)
         ]),
         pl.Join([
             pl.Table("c", [
                 pl.Load('https://geo.api.gouv.fr/communes', {'codePostal': pl.Field('properties->postcode', 'addr')}),
+                pl.Map({"?codePostal": pl.JointField(pl.Field('properties->postcode', 'addr'))}, append=True)
             ])
         ]),
         pl.Map({
@@ -284,22 +289,25 @@ def test_multi_join():
             Condition(Field("population", "c"), ">", Scalar(50000))
         ])
     )
-
+    
     assert plan(ast) == pl.Pipeline([
         pl.Table("addr", [
-            pl.Load('https://api-adresse.data.gouv.fr/search#features', {'q': '31 av gallieni 92160 antony'})
+            pl.Load('https://api-adresse.data.gouv.fr/search#features', {'q': '31 av gallieni 92160 antony'}),
+            pl.Map({"?q": '31 av gallieni 92160 antony'}, append=True)
+        ]),
+        pl.Join([
+            pl.Table("ent", [
+                pl.Load('https://recherche-entreprises.api.gouv.fr/search#results', {'code_postal': pl.Field('codePostaux->0', 'c')}),
+                pl.Map({"?code_postal": pl.JointField(pl.Field('codePostaux->0', 'c'))}, append=True)
+            ])
         ]),
         pl.Join([
             pl.Table("c", [
                 pl.Load('https://geo.api.gouv.fr/communes', {'codePostal': pl.Field('properties->postcode', 'addr')}),
-            ]),
-            pl.Filter([pl.Condition(pl.Field('population', 'c'), '>', 50000)])
-        ]),
-        pl.Join([
-            pl.Table("ent", [
-                pl.Load('https://recherche-entreprises.api.gouv.fr/search#results', {'code_postal': pl.Field('codePostaux->0', 'c')})
+                pl.Map({"?codePostal": pl.JointField(pl.Field('properties->postcode', 'addr'))}, append=True)
             ])
         ]),
+        pl.Filter([pl.Condition(pl.Field('population', 'c'), '>', 50000)]),
         pl.Map({
             'addr': pl.Field('properties->label', 'addr'),
             'ville': pl.Field('nom', 'c'),
@@ -320,8 +328,10 @@ def test_expand():
     )
 
     assert plan(ast) == pl.Pipeline([
-        pl.Load('https://example.com'),
-        pl.Map({"id": "id", "fields": "fields"}),
+        pl.Table('https://example.com', [
+            pl.Load('https://example.com')
+        ]),
+        pl.Map({"id": pl.Field("id"), "fields": pl.Field("fields")}),
         pl.Expand("fields")
     ])
 
@@ -337,8 +347,10 @@ def test_unnest():
     )
 
     assert plan(ast) == pl.Pipeline([
-        pl.Load('https://example.com'),
-        pl.Map({"fields": "fields"}),
+        pl.Table('https://example.com', [
+            pl.Load('https://example.com')
+        ]),
+        pl.Map({"fields": pl.Field("fields")}),
         pl.Unnest("fields")
     ])
 
@@ -353,12 +365,13 @@ def test_aggregate():
         ],
         where=Condition(QueryField("codeDepartement"), "=", Scalar(92))
     )
-
+    
     assert plan(ast) == pl.Pipeline([
-        pl.Load('https://geo.api.gouv.fr/communes', {'codeDepartement': 92}),
-        pl.Aggregate({}, {
-            "sum": ['sum', pl.Field('population')]
-        })
+        pl.Table('https://geo.api.gouv.fr/communes', [
+            pl.Load('https://geo.api.gouv.fr/communes', {'codeDepartement': 92}),
+            pl.Map({"?codeDepartement": 92}, append=True)
+        ]),
+        pl.SQL('SELECT SUM("population") FROM "data"')
     ])
 
 
@@ -370,14 +383,13 @@ def test_group_by():
         ],
         from_=[
             URL("https://geo.api.gouv.fr/communes")
-        ]
+        ],
+        group_by="codeDepartement"
     )
 
     assert plan(ast) == pl.Pipeline([
-        pl.Load('https://geo.api.gouv.fr/communes'),
-        pl.Aggregate({
-            "codeDepartement": pl.Field('codeDepartement')
-        }, {
-            "sum": ['sum', pl.Field('population')]
-        })
+        pl.Table('https://geo.api.gouv.fr/communes', [
+            pl.Load('https://geo.api.gouv.fr/communes')
+        ]),
+        pl.SQL("""SELECT "codeDepartement", SUM("population") FROM "data" GROUP BY codeDepartement""")
     ])

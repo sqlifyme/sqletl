@@ -12,6 +12,10 @@ from .ctx import Context
 from .datatable import DataTable, iter_peek
 
 
+class PipelineError(Exception):
+    pass
+
+
 class Task:
     def __init__(self):
         self.dependencies = []
@@ -91,7 +95,10 @@ class Field:
             self.expr = jsonpath_ng.parse(path)
 
     def resolve(self, dt, row):
-        value = dt.get(row, self.name, self.source)
+        try:
+            value = dt.get(row, self.name, self.source)
+        except:
+            raise PipelineError("Unknown field: %s" % repr(self))
         if value and self.path:
             value = self.expr.find(value)
             if value:
@@ -421,14 +428,14 @@ class Unnest(Task):
         for row in prev:
             value = row[idx]
             if not isinstance(value, list):
-                raise Exception()
+                raise PipelineError("UNNEST: Target field must be an array")
             row = list(row)
             row.pop(idx)
             row = tuple(row)
             
             for item in value:
                 if not isinstance(item, dict):
-                    raise Exception()
+                    raise PipelineError("UNNEST: Array elements must be objects")
                 for f in item:
                     if f not in new_cols:
                         new_cols.append(f)
@@ -527,7 +534,7 @@ class SQL(Task):
             return DataTable()
         conn = sqlite3.connect(":memory:")
         cur = conn.cursor()
-        cur.execute("CREATE TABLE data (%s)" % ', '.join(prev.prefixed_cols))
+        cur.execute("CREATE TABLE data (%s)" % ', '.join([f'"{c}"' for c in prev.prefixed_cols]))
         cols = list(range(len(prev.cols)))
         bindings = [[json.dumps(row[i]) if isinstance(row[i], (list, dict)) else row[i] for i in cols] for row in prev]
         cur.executemany(f"INSERT INTO data VALUES ({', '.join(['?' for _ in prev.cols])})", bindings)

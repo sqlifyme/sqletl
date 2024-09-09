@@ -68,6 +68,24 @@ def test_join():
     assert r[0] == {'addr': '31 Avenue Galliéni 92160 Antony', 'ville': 'Antony', 'nom_complet': 'LA POSTE (DIRECTION GENERALE DE LA POSTE)'}
 
 
+def test_join_on_tables():
+    pipe = Pipeline([
+        Table("t1", [
+            Load('file://tests/fixtures/data.csv')
+        ]),
+        Join([
+            Table("t2", [
+                Load('file://tests/fixtures/data-join.csv')
+            ])
+        ]),
+        Filter([Condition(Field('nom', 't2'), '=', Field('nom', 't1'))]),
+        Map({"nom": Field("nom", "t1"), "region": Field("region", "t2")})
+    ])
+    r = pipe.run().to_dict()
+    print(r)
+    assert r[0] == {'nom': 'paris', 'region': "75"}
+
+
 def test_equality():
     pipe1 = Pipeline([
         Load('https://api-adresse.data.gouv.fr/search#features', {'q': "31 av gallieni 92160 antony"}),
