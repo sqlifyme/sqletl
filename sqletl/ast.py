@@ -68,6 +68,8 @@ class Field(Node):
         self.source = source
 
     def __str__(self):
+        if self.path == "*":
+            return "*"
         if self.source:
             return f'"{self.source}"."{self.path}"'
         return f'"{self.path}"'
@@ -90,10 +92,13 @@ class Alias(Node):
 
 
 class URL(Node):
-    def __init__(self, url):
+    def __init__(self, url, database=None):
         self.url = url
+        self.database = database
 
     def __str__(self):
+        if self.database:
+            return f'"{self.database}"."{self.url}"'
         return f'"{self.url}"'
 
 
@@ -165,10 +170,13 @@ class With(Node):
 
 
 class Table(Node):
-    def __init__(self, name):
+    def __init__(self, name, database=None):
         self.name = name
+        self.database = database
 
     def __str__(self):
+        if self.database:
+            return f'"{self.database}"."{self.name}"'
         return f'"{self.name}"'
 
 

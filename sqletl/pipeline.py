@@ -7,6 +7,7 @@ import sqlite3
 import json
 import itertools
 import threading
+import re
 from contextlib import contextmanager
 from .ctx import Context
 from .datatable import DataTable, iter_peek
@@ -121,33 +122,33 @@ class Field:
         return "Field(%s)" % ((f"{self.source}.{self.name}" if self.source else self.name) + (f".{self.path}" if self.path else ""))
 
 
-class Table(Task):
+class Alias(Task):
     def __init__(self, name, tasks):
         self.name = name
         self.dependencies = [TaskGroup(tasks)]
 
     def _run(self, ctx: Context, prev: DataTable):
-        prev.rename_source(None, self.name)
+        prev.set_source(self.name)
         return prev
     
     def __repr__(self):
         return f"{self.__class__.__name__}({self.name})\n" + textwrap.indent(repr(self.dependencies[0]), "  ")
 
 
-class CreateTable(Table):
+class Table(Alias):
     def _run(self, ctx: Context, prev: DataTable):
         ctx.create_table(self.name, super()._run(ctx, prev))
         return DataTable()
 
 
 class Load(Task):
-    def __init__(self, uri, params=None, source=None):
+    def __init__(self, uri, params=None, database=None):
         super().__init__()
         if isinstance(params, dict):
             params = list(params.items())
         self.uri = uri
         self.params = params or []
-        self.source = source or uri
+        self.database = database
 
     def _run(self, ctx: Context, prev: DataTable):
         params = []
@@ -159,7 +160,7 @@ class Load(Task):
                 params.append((k, v.resolve(prev, row)))
             else:
                 params.append((k, v))
-        return ctx.load(self.uri, params)
+        return ctx.load(self.uri, params, self.database)
     
     def __repr__(self):
         return f"{self.__class__.__name__}({self.uri}, {repr(self.params)})"
@@ -180,6 +181,11 @@ class Filter(Task):
         return f"Filter({' AND '.join(map(repr, self.conditions))})"
     
 
+def sql_like(value, expr):
+    expr = expr.replace("%", ".*").replace("_", ".")
+    return bool(re.match(expr, value))
+        
+
 class Condition:
     operators = {
         "=": operator.eq,
@@ -187,7 +193,8 @@ class Condition:
         ">": operator.gt,
         ">=": operator.ge,
         "<": operator.lt,
-        "<=": operator.le
+        "<=": operator.le,
+        "like": sql_like
     }
 
     def __init__(self, left, op, right):
@@ -196,12 +203,12 @@ class Condition:
         self.right = right
 
     def match(self, dt, row):
-        if isinstance(self.left, Field):
+        if isinstance(self.left, (Field, Expression)):
             left = self.left.resolve(dt, row)
         else:
             left = self.left
 
-        if isinstance(self.right, Field):
+        if isinstance(self.right, (Field, Expression)):
             right = self.right.resolve(dt, row)
         else:
             right = self.right
@@ -215,7 +222,35 @@ class Condition:
         return self.__class__ == other.__class__ and self.__dict__ == other.__dict__
     
     def __repr__(self):
-        return f"{self.left} {self.op} {self.right}"
+        return f"{self.left} {self.op.upper()} {self.right}"
+
+
+class Expression:
+    def __init__(self, func, args):
+        self.func = func.lower()
+        self.args = args
+
+    def resolve(self, dt, row):
+        args = [a.resolve(dt, row) if isinstance(a, (Field, Expression)) else a for a in self.args]
+        try:
+            return getattr(self, self.func)(*args)
+        except:
+            raise PipelineError(f"An error occured while running the expression '{self.func}'")
+
+    def concat(self, *args):
+        return "".join(args)
+                
+    def lower(self, s):
+        return s.lower()
+                    
+    def upper(self, s):
+        return s.upper()
+    
+    def __eq__(self, other):
+        return self.__class__ == other.__class__ and self.__dict__ == other.__dict__
+    
+    def __repr__(self):
+        return f"{self.func}({', '.join(map(repr, self.args))})"
 
 
 class Map(Task):
@@ -306,7 +341,7 @@ class Join(Task):
                 if joincols is None:
                     joincols = related.cols
                 elif joincols != related.cols:
-                    raise ValueError("Incompatible columns")
+                    raise PipelineError("Incompatible columns")
                 
                 if related.is_empty():
                     if self.left:
@@ -494,12 +529,13 @@ class Sort(Task):
     
 
 class Limit(Task):
-    def __init__(self, limit):
+    def __init__(self, limit, offset=0):
         super().__init__()
         self.limit = limit
+        self.offset = offset
 
     def _run(self, ctx: Context, prev: DataTable):
-        return DataTable(prev, itertools.islice(prev, self.limit))
+        return DataTable(prev, itertools.islice(prev, self.offset, self.limit))
     
     def __repr__(self):
         return f"{self.__class__.__name__}({self.limit})"
@@ -534,8 +570,8 @@ class SQL(Task):
             return DataTable()
         conn = sqlite3.connect(":memory:")
         cur = conn.cursor()
-        cur.execute("CREATE TABLE data (%s)" % ', '.join([f'"{c}"' for c in prev.prefixed_cols]))
-        cols = list(range(len(prev.cols)))
+        cur.execute("CREATE TABLE data (%s)" % ', '.join([f'"{c}"' for c in prev.colnames]))
+        cols = list(prev.idx_by_unique_names.values())
         bindings = [[json.dumps(row[i]) if isinstance(row[i], (list, dict)) else row[i] for i in cols] for row in prev]
         cur.executemany(f"INSERT INTO data VALUES ({', '.join(['?' for _ in prev.cols])})", bindings)
         cur.execute(self.query)

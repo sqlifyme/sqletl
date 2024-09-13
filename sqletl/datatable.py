@@ -8,7 +8,9 @@ class DataTable:
             self.set_columns(cols.cols, source)
         else:
             self.set_columns(cols or [], source)
-        self.rows = iter(rows or [])
+        if rows is None:
+            rows = []
+        self.rows = iter(rows)
         self.started = False
         self.stopped = False
         self.count = 0
@@ -19,6 +21,11 @@ class DataTable:
     
     def add_columns(self, cols, source=None):
         self.cols += [(source, c) if not isinstance(c, tuple) else c for c in cols]
+        self.refresh_indexes()
+    
+    def set_source(self, source):
+        for i, (src, col) in enumerate(self.cols):
+            self.cols[i] = (source, col)
         self.refresh_indexes()
 
     def rename_source(self, prev, name):
@@ -105,7 +112,7 @@ class DataTable:
 class PandasDataTable(DataTable):
     def __init__(self, df, source=None):
         self.dataframe = df
-        super().__init__(df.columns, df.values, source)
+        super().__init__(list(df.columns), df.values, source)
 
     def to_dict(self):
         return self.dataframe.to_dict('records')

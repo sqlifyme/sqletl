@@ -22,7 +22,7 @@ def plan(node):
 def walk_with(node):
     tasks = []
     for name, query in node.tables.items():
-        tasks.append(pipeline.CreateTable(name, walk_select(query)))
+        tasks.append(pipeline.Table(name, walk_select(query)))
     tasks.extend(walk_select(node.select))
     return tasks
 
@@ -53,9 +53,9 @@ def walk_select(select):
             sources.append(list(split_identifier(node)) + [None])
     
     if None in queries and len([s for s in sources if not s[0]]) > 1:
-        raise PlannerError("Cannot use multiple unaliases sources in FROM clause when using unidentified query params")
+        raise PlannerError("Cannot use multiple unaliased sources in FROM clause when using unidentified query params")
 
-    for alias, source, source_filters in sources:
+    for alias, source, database, source_filters in sources:
         table_tasks = []
         source_queries = None
         source_params = []
@@ -76,15 +76,15 @@ def walk_select(select):
         if alias in queries:
             # the WHERE clause contains queries for this source
             for params in queries[alias]:
-                table_tasks.append(create_source(source, params + source_params))
+                table_tasks.append(create_source(source, params + source_params, database))
         else:
-            table_tasks.append(create_source(source, source_params))
+            table_tasks.append(create_source(source, source_params, database))
         
         if len(table_tasks) > 1:
             table_tasks = [pipeline.Union(*table_tasks)]
         else:
             table_tasks = table_tasks[0]
-        table = pipeline.Table(alias or source, table_tasks)
+        table = pipeline.Alias(alias or source, table_tasks)
         if source_filters and source_filters.nodes:
             source_filters = walk_comparisons(source_filters.nodes[0].nodes, remove_query_fields=True)
             tasks.append(pipeline.Join([table]))
@@ -96,10 +96,14 @@ def walk_select(select):
     # we now process the SELECT clause
     fields = []
     expands = []
+    mapping_append = False
     has_select = False
     has_aggregates = False
     for field in select.fields:
         alias = None
+        if field == "*":
+            mapping_append = True
+            continue
         if isinstance(field, ast.Alias):
             alias = field.alias
             field = field.node
@@ -123,8 +127,10 @@ def walk_select(select):
             field = ast.Alias(alias, field)
         fields.append(field)
             
-    if has_aggregates and expands:
+    if (has_aggregates or select.group_by) and expands:
         raise PlannerError("Aggregates and EXPAND/UNNEST functions are not supported together")
+    if select.window and expands:
+        raise PlannerError("Windows and EXPAND/UNNEST functions are not supported together")
 
     if filters:
         filters = discard_filter_query_fields(filters)
@@ -132,9 +138,11 @@ def walk_select(select):
     has_where = filters and (len(filters.nodes) > 1 or any([not isinstance(n, ast.Condition) or n.operator not in pipeline.Condition.operators\
                                                             for _and in filters.nodes for n in _and.nodes]))
     require_sql = has_select or has_where or select.group_by or select.window
-    if require_sql and not expands:
-        # the query contains pieces that need to be processed using a real SQL enfine
+    if require_sql:
+        # the query contains pieces that need to be processed using a real SQL engine
         # we partially rebuild the SQL statement
+        if mapping_append:
+            fields.insert(0, ast.Field("*"))
         sql = ast.Select(fields, from_=[ast.Table("data")], where=walk_filters(filters) if filters else None)
         if not expands:
             sql.group_by = select.group_by
@@ -149,15 +157,18 @@ def walk_select(select):
             tasks.append(walk_comparisons(filters.nodes[0].nodes))
         if fields:
             mapping = {}
+            if select.order_by:
+                mapping.update({f.path: pipeline.Field(f.path, f.source) for f, d in select.order_by})
             for field in fields:
                 alias, field = split_alias(field)
-                mapping[alias or field.path] = convert_operand(field)
-            tasks.append(pipeline.Map(mapping))
+                field = convert_operand(field)
+                mapping[alias or field.name] = field
+            tasks.append(pipeline.Map(mapping, append=mapping_append))
 
     if expands:
         tasks.extend(expands)
     
-    if expands and require_sql:
+    if require_sql and expands:
         sql = ast.Select([], from_=[ast.Table("data")])
         sql.group_by = select.group_by
         sql.window = select.window
@@ -171,12 +182,16 @@ def walk_select(select):
             tasks.append(pipeline.Distinct())
         if select.order_by:
             tasks.append(pipeline.Sort([(pipeline.Field(field.path, field.source), d) for field, d in select.order_by]))
+        if select.limit:
+            tasks.append(pipeline.Limit(int(select.limit), int(select.offset) if select.offset else None))
+        elif select.offset:
+            tasks.append(pipeline.Limit(None, int(select.offset)))
 
     return tasks
             
 
-def create_source(source, params):
-    tasks = [pipeline.Load(source, params)]
+def create_source(source, params, database):
+    tasks = [pipeline.Load(source, params, database)]
     if params:
         params = [(f"?{name}", pipeline.JointField(value) if isinstance(value, pipeline.Field) else value) for name, value in params]
         tasks.append(pipeline.Map(dict(params), append=True))
@@ -241,7 +256,7 @@ def split_alias(node):
 
 def split_identifier(node):
     alias, node = split_alias(node)
-    return alias, node.url if isinstance(node, ast.URL) else node.name
+    return alias, node.url if isinstance(node, ast.URL) else node.name, node.database
             
 
 def expand_bool_expr(node):
@@ -297,3 +312,5 @@ def convert_operand(field):
         return pipeline.Field(field.path, field.source)
     if isinstance(field, ast.Scalar):
         return field.value
+    if isinstance(field, ast.Function):
+        return pipeline.Expression(field.func, [convert_operand(a) for a in field.args])

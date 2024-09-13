@@ -42,7 +42,7 @@ class Parser(BaseParser):
             else:
                 name, schema, alias = self.parse_identifier(col_expr, group_delimiters=(('(', ')'), ('CASE ', ' END')))
             if name == "*":
-                yield None
+                yield "*"
                 continue
             if re.match("[a-z0-9_]+\(", name, re.I):
                 name, args = self.parse_sql_func(name)
@@ -62,9 +62,9 @@ class Parser(BaseParser):
     
     def walk_from_entry(self, info):
         if re.match("[a-z]+://", info.name):
-            source = ast.URL(info.name)
+            source = ast.URL(info.name, info.schema)
         else:
-            source = ast.Table(f'"{info.schema}"."{info.name}"' if info.schema else info.name)
+            source = ast.Table(info.name, info.schema)
         if info.alias:
             source = ast.Alias(info.alias, source)
         if info.join:

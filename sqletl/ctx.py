@@ -11,7 +11,11 @@ class Context:
         self.tables = {}
         self.protocols = protocols or default_procotols()
     
-    def load(self, uri, params):
+    def load(self, uri, params, database=None):
+        method = "GET"
+        if uri.startswith("POST "):
+            method = "POST"
+            uri = uri[5:]
         if "://" not in uri:
             if params:
                 raise ContextError("Parameters not supported for tables")
@@ -24,7 +28,7 @@ class Context:
         protocol = self.resolve_protocol(scheme)
         if not protocol:
             raise ContextError(f"Protocol {scheme} not supported")
-        func = getattr(protocol, "get", None)
+        func = getattr(protocol, method.lower(), None)
         if not func:
             raise ContextError(f"Method GET not supported for protocol {scheme}")
         return func(self, uri, params, content_type)

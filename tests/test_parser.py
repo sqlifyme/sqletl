@@ -113,6 +113,22 @@ def test_single_join():
     )
 
 
+def test_join_concat():
+    stmt = """
+        SELECT * FROM a JOIN b ON a.x = CONCAT(b.y, b.z)
+    """
+    assert parse(stmt) == Select(
+        fields=["*"],
+        from_=[
+            Join(
+                Table("a"),
+                Table("b"),
+                Condition(Field("x", "a"), "=", Function("CONCAT", [Field("y", "b"), Field("z", "b")]))
+            )
+        ]
+    )
+
+
 def test_expand():
     stmt = """
         SELECT id, EXPAND(fields)

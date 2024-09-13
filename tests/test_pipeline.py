@@ -1,4 +1,5 @@
 from sqletl.pipeline import *
+from sqletl.datatable import DictDataTable
 
 
 def test_field():
@@ -40,17 +41,17 @@ def test_union():
 
 def test_join():
     pipe = Pipeline([
-        CreateTable("addr", [
+        Table("addr", [
             Load('https://api-adresse.data.gouv.fr/search#features', {'q': '31 av gallieni 92160 antony'})
         ]),
-        CreateTable("c", [
+        Table("c", [
             Load("addr"),
             Join([
                 Load('https://geo.api.gouv.fr/communes', {'codePostal': Field('properties->postcode', 'addr')}),
                 Filter([Condition(Field('population'), '>=', 50000)])
             ])
         ]),
-        CreateTable("ent", [
+        Table("ent", [
             Load("c"),
             Join([
                 Load('https://recherche-entreprises.api.gouv.fr/search#results', {'code_postal': Field('codesPostaux->0', 'c')})
@@ -70,11 +71,11 @@ def test_join():
 
 def test_join_on_tables():
     pipe = Pipeline([
-        Table("t1", [
+        Alias("t1", [
             Load('file://tests/fixtures/data.csv')
         ]),
         Join([
-            Table("t2", [
+            Alias("t2", [
                 Load('file://tests/fixtures/data-join.csv')
             ])
         ]),
@@ -151,13 +152,31 @@ def test_sql():
     assert r[0] == {'codeDepartement': '01', 'sum': 663202}
 
 
-def test_file():
+def test_csv():
     pipe = Pipeline([
         Load('file://tests/fixtures/data.csv'),
     ])
     r = pipe.run().to_dict()
     print(r)
     assert r[0] == {'nom': 'paris', 'population': '2200000'}
+
+
+def test_xls():
+    pipe = Pipeline([
+        Load('file://tests/fixtures/mtcars.xlsx'),
+    ])
+    r = pipe.run().to_dict()
+    print(r)
+    assert r[0] == {'model': 'Mazda RX4', 'mpg': 21.0, 'cyl': 6, 'disp': 160.0, 'hp': 110, 'drat': 3.9, 'wt': 2.62, 'qsec': 16.46, 'vs': 0, 'am': 1, 'gear': 4, 'carb': 4}
+
+
+def test_parquet():
+    pipe = Pipeline([
+        Load('file://tests/fixtures/Titanic.parquet'),
+    ])
+    r = pipe.run().to_dict()
+    print(r)
+    assert r[0] == {'PassengerId': 1, 'Survived': 0, 'Pclass': 3, 'Name': 'Braund, Mr. Owen Harris', 'Sex': 'male', 'Age': 22.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'A/5 21171', 'Fare': 7.25, 'Cabin': None, 'Embarked': 'S'}, {'PassengerId': 2, 'Survived': 1, 'Pclass': 1, 'Name': 'Cumings, Mrs. John Bradley (Florence Briggs Thayer)', 'Sex': 'female', 'Age': 38.0, 'SibSp': 1, 'Parch': 0, 'Ticket': 'PC 17599', 'Fare': 71.2833, 'Cabin': 'C85', 'Embarked': 'C'}
 
 
 def test_expand():
@@ -201,3 +220,9 @@ def test_unnest():
     assert len(r) == 2
     assert r[0] == {"col1": "value1", "col2": "value2", "col3": None}
     assert r[1] == {"col1": "value3", "col2": "value4", "col3": "value5"}
+
+
+def test_expression():
+    expr = Expression("CONCAT", [Field("col1"), Field("col2")])
+    dt = DictDataTable([{"col1": "a", "col2": "b"}])
+    assert expr.eval(dt, next(dt)) == "ab"

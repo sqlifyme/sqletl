@@ -19,6 +19,8 @@ psycopg = { extras = ["binary"], version = "^3.1.18" }
 mysql-connector-python =  "^8.3.0"
 s3fs = "^2024.9.0"
 fsspec = "^2024.9.0"
+pyarrow = "^17.0.0"
+openpyxl = "^3.1.5"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"
