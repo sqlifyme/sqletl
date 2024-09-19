@@ -128,39 +128,51 @@ class Alias(Task):
         self.dependencies = [TaskGroup(tasks)]
 
     def _run(self, ctx: Context, prev: DataTable):
-        prev.set_source(self.name)
-        return prev
+        dt = DataTable(prev.cols, prev)
+        dt.set_source(self.name)
+        return dt
     
     def __repr__(self):
         return f"{self.__class__.__name__}({self.name})\n" + textwrap.indent(repr(self.dependencies[0]), "  ")
 
 
-class Table(Alias):
+class Table(Task):
+    def __init__(self, name, tasks):
+        self.name = name
+        self.dependencies = [TaskGroup(tasks)]
+
     def _run(self, ctx: Context, prev: DataTable):
-        ctx.create_table(self.name, super()._run(ctx, prev))
+        ctx.create_table(self.name, prev)
         return DataTable()
+    
+    def __repr__(self):
+        return f"{self.__class__.__name__}({self.name})\n" + textwrap.indent(repr(self.dependencies[0]), "  ")
 
 
 class Load(Task):
-    def __init__(self, uri, params=None, database=None):
+    def __init__(self, uri, params=None, database=None, source=None):
         super().__init__()
         if isinstance(params, dict):
             params = list(params.items())
         self.uri = uri
         self.params = params or []
         self.database = database
+        self.source = source
 
     def _run(self, ctx: Context, prev: DataTable):
         params = []
         row = None
         for k, v in self.params:
-            if isinstance(v, Field):
+            if isinstance(v, (Field, Expression)):
                 if row is None:
-                    row = next(iter(prev), [])
+                    row = next(prev, [])
                 params.append((k, v.resolve(prev, row)))
             else:
                 params.append((k, v))
-        return ctx.load(self.uri, params, self.database)
+        dt = ctx.load(self.uri, params, self.database)
+        if self.source:
+            dt.set_source(self.source)
+        return dt
     
     def __repr__(self):
         return f"{self.__class__.__name__}({self.uri}, {repr(self.params)})"
@@ -327,31 +339,56 @@ class Union(Task):
 
 
 class Join(Task):
-    def __init__(self, tasks, left=False):
+    def __init__(self, tasks, conditions=None, left=False, preload=False):
         super().__init__()
         self.tasks = TaskGroup(tasks)
+        self.conditions = conditions if isinstance(conditions, Filter) else Filter(conditions) if conditions else None
         self.left = left
+        self.preload = preload
 
     def _run(self, ctx: Context, prev: DataTable):
         joincols = None
         iterators= []
+        preloaded_data = None
+
+        if self.preload:
+            dt = self.tasks.run(ctx, prev)
+            if dt.is_empty():
+                if not self.left:
+                    return DataTable()
+                return prev
+            joincols = dt.cols
+            preloaded_data = list(dt)
+        
         for row in prev:
             with join_context((prev, row)):
-                related = self.tasks.run(ctx, DataTable(prev.cols, [row]))
-                if joincols is None:
-                    joincols = related.cols
-                elif joincols != related.cols:
-                    raise PipelineError("Incompatible columns")
+                if self.preload:
+                    related = DataTable(joincols, preloaded_data)
+                else:
+                    related = self.tasks.run(ctx, DataTable(prev.cols, [row]))
                 
                 if related.is_empty():
-                    if self.left:
-                        iterators.append([row + tuple([None] * len(joincols))])
+                    if not self.left:
+                        continue
+                    elif joincols:
+                        related = [row + tuple([None] * len(joincols))]
                 else:
-                    iterators.append(list([row + r for r in related]))
+                    if joincols is None:
+                        joincols = related.cols
+                    elif joincols != related.cols:
+                        raise PipelineError("Incompatible columns")
+                    related = [row + r for r in related]
+
+                if self.conditions:
+                    related = self.conditions._run(ctx, DataTable(prev.cols + joincols, list(related)))
+                    iterators.append(related.rows)
+                else:
+                    iterators.append(list(related))
+
         return DataTable(prev.cols + joincols, itertools.chain.from_iterable(iterators))
     
     def __repr__(self):
-        return f"{self.__class__.__name__}\n" + textwrap.indent(repr(self.tasks), "  ")
+        return f"{self.__class__.__name__}\n" + textwrap.indent(repr(self.tasks), "  ") + ("\n" + textwrap.indent(repr(self.conditions), "  ") if self.conditions else "")
 
             
 class _JoinContext:
@@ -433,6 +470,14 @@ class Expand(Task):
                             fields[k[0].value] = v[0].value
             else:
                 fields = value
+                if self.key_field:
+                    _fields = {}
+                    for k, v in fields.items():
+                        v = self.key_field.find(v)
+                        if v:
+                            _fields[k] = v[0].value
+                    fields = _fields
+                    
             for f in fields:
                 if f not in new_cols:
                     new_cols.append(f)
@@ -462,19 +507,24 @@ class Unnest(Task):
     def unnest(self, prev, new_cols, idx):
         for row in prev:
             value = row[idx]
-            if not isinstance(value, list):
-                raise PipelineError("UNNEST: Target field must be an array")
+            if not isinstance(value, (list, dict)):
+                raise PipelineError("UNNEST: Target field must be an array or object")
             row = list(row)
             row.pop(idx)
             row = tuple(row)
-            
-            for item in value:
-                if not isinstance(item, dict):
-                    raise PipelineError("UNNEST: Array elements must be objects")
-                for f in item:
-                    if f not in new_cols:
-                        new_cols.append(f)
-                yield row + tuple(item.get(f) for f in new_cols)
+
+            if isinstance(value, dict):
+                new_cols.extend(('key', 'value'))
+                for k, v in value.items():
+                    yield row + (k, v)
+            else:
+                for item in value:
+                    if not isinstance(item, dict):
+                        raise PipelineError("UNNEST: Array elements must be objects")
+                    for f in item:
+                        if f not in new_cols:
+                            new_cols.append(f)
+                    yield row + tuple(item.get(f) for f in new_cols)
     
     def __repr__(self):
         return f"{self.__class__.__name__}({repr(self.field)})"
@@ -552,8 +602,8 @@ class Distinct(Task):
 class Print(Task):
     def _run(self, ctx, prev):
         rows = list(prev)
-        pprint(rows)
-        return DataTable(prev, rows)
+        pprint((prev.cols, rows))
+        return DataTable(prev.cols, rows)
     
     def __repr__(self):
         return "Print"

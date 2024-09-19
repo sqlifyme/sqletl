@@ -168,16 +168,21 @@ def test_single_join_via_condition():
         ]
     )
 
+    print(plan(ast))
+
     assert plan(ast) == pl.Pipeline([
         pl.Alias("t1", [
             pl.Load("t1")
         ]),
-        pl.Join([
-            pl.Alias("t2", [
-                pl.Load('t2')
-            ])
-        ]),
-        pl.Filter([pl.Condition(pl.Field('c1', 't1'), '=', pl.Field('c2', 't2'))])
+        pl.Join(
+            [
+                pl.Alias("t2", [
+                    pl.Load('t2')
+                ])
+            ], 
+            [pl.Condition(pl.Field('c1', 't1'), '=', pl.Field('c2', 't2'))],
+            preload=True
+        )
     ])
 
 
@@ -197,12 +202,15 @@ def test_join_concat():
         pl.Alias("a", [
             pl.Load("a")
         ]),
-        pl.Join([
-            pl.Alias("b", [
-                pl.Load('b')
-            ])
-        ]),
-        pl.Filter([pl.Condition(pl.Field('x', 'a'), '=', pl.Expression('CONCAT', [pl.Field('y', 'b'), pl.Field('z', 'b')]))])
+        pl.Join(
+            [
+                pl.Alias("b", [
+                    pl.Load('b')
+                ])
+            ],
+            [pl.Condition(pl.Field('x', 'a'), '=', pl.Expression('CONCAT', [pl.Field('y', 'b'), pl.Field('z', 'b')]))],
+            preload=True
+        )
     ])
 
 

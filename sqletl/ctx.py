@@ -17,6 +17,8 @@ class Context:
             method = "POST"
             uri = uri[5:]
         if "://" not in uri:
+            if method != "GET":
+                raise ContextError("Only GET method supported for tables")
             if params:
                 raise ContextError("Parameters not supported for tables")
             return self.get_table(uri)
@@ -36,8 +38,8 @@ class Context:
     def resolve_protocol(self, scheme):
         return self.protocols.get(scheme)
 
-    def create_table(self, name, data):
-        self.tables[name] = data
+    def create_table(self, name, dt):
+        self.tables[name] = dt
     
     def get_table(self, name):
         if name not in self.tables:

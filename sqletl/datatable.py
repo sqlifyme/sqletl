@@ -24,14 +24,11 @@ class DataTable:
         self.refresh_indexes()
     
     def set_source(self, source):
-        for i, (src, col) in enumerate(self.cols):
-            self.cols[i] = (source, col)
+        self.cols = [(source, c[1]) for c in self.cols]
         self.refresh_indexes()
 
     def rename_source(self, prev, name):
-        for i, (source, col) in enumerate(self.cols):
-            if source == prev:
-                self.cols[i] = (name, col)
+        self.cols = [(name, c[1]) for c in self.cols if c[0] == prev]
         self.refresh_indexes()
 
     def refresh_indexes(self):
@@ -43,7 +40,7 @@ class DataTable:
         for i, (src, col) in enumerate(self.cols):
             self.idx_by_sources.setdefault(src, {})[col] = i
             self.idx_by_unique_names.setdefault(col, i)
-            self.source_by_unique_names[col] = src
+            self.source_by_unique_names.setdefault(col, src)
             self.prefixed_cols.append(src + '__' + col if src else col)
 
     def colidx(self, col, source=None):

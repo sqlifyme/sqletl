@@ -47,15 +47,17 @@ def walk_select(select):
         if isinstance(node, ast.Join):
             joins = []
             left = walk_join(node, joins)
-            sources.append(list(split_identifier(left)) + [None])
+            sources.append(list(split_identifier(left)) + [None, None])
             sources.extend(reversed(joins))
         else:
-            sources.append(list(split_identifier(node)) + [None])
+            sources.append(list(split_identifier(node)) + [None, None])
     
     if None in queries and len([s for s in sources if not s[0]]) > 1:
         raise PlannerError("Cannot use multiple unaliased sources in FROM clause when using unidentified query params")
 
-    for alias, source, database, source_filters in sources:
+    for alias, source, database, source_filters, join_type in sources:
+        if source_filters and join_type not in ("INNER", "LEFT"):
+            raise PlannerError(f"Unsupported JOIN type {join_type}")
         table_tasks = []
         source_queries = None
         source_params = []
@@ -73,6 +75,7 @@ def walk_select(select):
             # only one query is allowd in the ON clause, retrieve its params
             source_params = list(source_queries.values())[0][0]
     
+        has_query_fields = source_params or queries.get(alias)
         if alias in queries:
             # the WHERE clause contains queries for this source
             for params in queries[alias]:
@@ -87,9 +90,7 @@ def walk_select(select):
         table = pipeline.Alias(alias or source, table_tasks)
         if source_filters and source_filters.nodes:
             source_filters = walk_comparisons(source_filters.nodes[0].nodes, remove_query_fields=True)
-            tasks.append(pipeline.Join([table]))
-            if source_filters:
-                tasks.append(source_filters)
+            tasks.append(pipeline.Join([table], source_filters, left=join_type == "LEFT", preload=not has_query_fields))
         else:
             tasks.append(table)
 
@@ -201,9 +202,9 @@ def create_source(source, params, database):
 def walk_join(node, sources):
     if isinstance(node.right, ast.Join):
         left = walk_join(node.right, sources)
-        sources.insert(0, list(split_identifier(left)) + [node.on])
+        sources.insert(0, list(split_identifier(left)) + [node.on, node.type])
     else:
-        sources.insert(0, list(split_identifier(node.right)) + [node.on])
+        sources.insert(0, list(split_identifier(node.right)) + [node.on, node.type])
     return node.left
 
 

@@ -11,10 +11,7 @@ def test_field():
 
 def test_simple():
     pipe = Pipeline([
-        Load('https://api-adresse.data.gouv.fr/search#features', {'q': "31 av gallieni 92160 antony"}),
-        Join([
-            Load('https://geo.api.gouv.fr/communes', {'codePostal': Field('properties->postcode')})
-        ]),
+        Load('https://geo.api.gouv.fr/communes', {'codePostal': 92160}),
         Map({'population': Field('population'), 'nom': Field('nom')})
     ])
     r = pipe.run().to_dict()
@@ -39,23 +36,36 @@ def test_union():
     assert r == [{'population': 63232, 'nom': 'Antony'}, {'nom': 'Paris', 'population': 2133111}]
 
 
-def test_join():
+def test_simple_join():
+    pipe = Pipeline([
+        Load('https://api-adresse.data.gouv.fr/search#features', {'q': "31 av gallieni 92160 antony"}),
+        Join(
+            [Load('https://geo.api.gouv.fr/communes', {'codePostal': Field('properties->postcode')})]
+        ),
+        Map({'population': Field('population'), 'nom': Field('nom')})
+    ])
+    r = pipe.run().to_dict()
+    print(r)
+    assert r == [{'population': 63232, 'nom': 'Antony'}]
+
+
+def test_multi_join():
     pipe = Pipeline([
         Table("addr", [
-            Load('https://api-adresse.data.gouv.fr/search#features', {'q': '31 av gallieni 92160 antony'})
+            Alias("addr", [Load('https://api-adresse.data.gouv.fr/search#features', {'q': '31 av gallieni 92160 antony'})])
         ]),
         Table("c", [
             Load("addr"),
-            Join([
-                Load('https://geo.api.gouv.fr/communes', {'codePostal': Field('properties->postcode', 'addr')}),
-                Filter([Condition(Field('population'), '>=', 50000)])
-            ])
+            Join(
+                [Alias("c", [Load('https://geo.api.gouv.fr/communes', {'codePostal': Field('properties->postcode', 'addr')})])],
+                [Condition(Field('population'), '>=', 50000)]
+            )
         ]),
         Table("ent", [
             Load("c"),
-            Join([
-                Load('https://recherche-entreprises.api.gouv.fr/search#results', {'code_postal': Field('codesPostaux->0', 'c')})
-            ])
+            Join(
+                [Alias("ent", [Load('https://recherche-entreprises.api.gouv.fr/search#results', {'code_postal': Field('codesPostaux->0', 'c')})])]
+            )
         ]),
         Load("ent"),
         Map({
@@ -74,12 +84,15 @@ def test_join_on_tables():
         Alias("t1", [
             Load('file://tests/fixtures/data.csv')
         ]),
-        Join([
-            Alias("t2", [
-                Load('file://tests/fixtures/data-join.csv')
-            ])
-        ]),
-        Filter([Condition(Field('nom', 't2'), '=', Field('nom', 't1'))]),
+        Join(
+            [
+                Alias("t2", [
+                    Load('file://tests/fixtures/data-join.csv')
+                ])
+            ],
+            [Condition(Field('nom', 't2'), '=', Field('nom', 't1'))],
+            preload=True
+        ),
         Map({"nom": Field("nom", "t1"), "region": Field("region", "t2")})
     ])
     r = pipe.run().to_dict()
@@ -225,4 +238,4 @@ def test_unnest():
 def test_expression():
     expr = Expression("CONCAT", [Field("col1"), Field("col2")])
     dt = DictDataTable([{"col1": "a", "col2": "b"}])
-    assert expr.eval(dt, next(dt)) == "ab"
+    assert expr.resolve(dt, next(dt)) == "ab"

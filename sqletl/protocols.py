@@ -32,7 +32,7 @@ class Http:
         is_json_body = False
         if "?" in url:
             url = urllib.parse.urlparse(url)
-            if url.query == "JSON":
+            if url.query.upper() == "JSON":
                 is_json_body = True
                 url = url._replace(query=None)
             url = url.geturl()
@@ -43,7 +43,7 @@ class Http:
                 kwargs["data"] = params
             else:
                 kwargs["params"] = params
-            print(kwargs)
+            print((url, kwargs))
             r = requests.request(method, url, **kwargs)
         except:
             raise ProtocolError(f"Request failed: {url}")
@@ -300,26 +300,31 @@ def expand_params(params):
             if part == "[]":
                 if current is None:
                     current = obj = []
-                elif isinstance(current, list):
-                    current.append([])
-                    current = current[-1]
-                else:
+                elif not isinstance(current, list):
                     raise Exception("Invalid key: %s" % key)
+                else:
+                    if i == len(parts) - 1:
+                        current.append([value])
+                    else:
+                        current.append([])
+                        current = current[-1]
                 continue
+            is_append = False
             if part.endswith("[]"):
                 part = part[:-2]
-                v = []
-                if i == len(parts) - 1:
-                    v.append(value)
-            elif i == len(parts) - 1:
-                v = value
-            else:
-                v = {}
+                is_append = True
             if isinstance(current, list):
-                current.append({part: v})
+                current.append({})
                 current = current[-1]
             elif current is None:
-                current = obj = {part: v}
+                current = obj = {part: [] if is_append else {}}
             else:
-                current = current.setdefault(part, v)
+                current.setdefault(part, [] if is_append else {})
+            if i == len(parts) - 1:
+                if is_append:
+                    current[part].append(value)
+                else:
+                    current[part] = value
+            else:
+                current = current[part]
     return obj

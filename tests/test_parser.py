@@ -82,7 +82,7 @@ def test_cte():
             )
         },
         Select(
-            fields=[],
+            fields=["*"],
             from_=[
                 Table("big_communes")
             ]
