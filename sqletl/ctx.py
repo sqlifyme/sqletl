@@ -1,9 +1,6 @@
 from .protocols import default_procotols
 from .reader import guess_content_type_from_filename
-
-
-class ContextError(Exception):
-    pass
+from .errors import ContextError
 
 
 class Context:

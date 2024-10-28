@@ -239,3 +239,18 @@ def test_expression():
     expr = Expression("CONCAT", [Field("col1"), Field("col2")])
     dt = DictDataTable([{"col1": "a", "col2": "b"}])
     assert expr.resolve(dt, next(dt)) == "ab"
+
+
+def test_sql_json_accessors_to_jsonpath():
+    sql_json_accessors_to_jsonpath("a->b->0->>c") == "a.b[0].c"
+    sql_json_accessors_to_jsonpath("a->'$.b'") == "a.b"
+
+
+def test_simple_with_scalar():
+    pipe = Pipeline([
+        Load('https://geo.api.gouv.fr/communes', {'codePostal': 92160}),
+        Map({'population': Field('population'), 'nom': Field('nom'), 'type': 'ville'})
+    ])
+    r = pipe.run().to_dict()
+    print(r)
+    assert r == [{'population': 63232, 'nom': 'Antony', 'type': 'ville'}]

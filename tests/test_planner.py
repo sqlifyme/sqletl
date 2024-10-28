@@ -426,3 +426,33 @@ def test_group_by():
         ]),
         pl.SQL("""SELECT "codeDepartement", SUM("population") FROM "data" GROUP BY codeDepartement""")
     ])
+
+
+def test_scalar():
+    ast = Select(fields=[Scalar(1)])
+    assert plan(ast) == pl.Pipeline([
+        pl.SQL('SELECT 1')
+    ])
+    ast = Select(fields=[Alias("result", Scalar(1))])
+    assert plan(ast) == pl.Pipeline([
+        pl.SQL('SELECT 1 AS "result"')
+    ])
+
+
+def test_simple_with_scalar():
+    ast = Select(
+        fields=[
+            Field("nom"),
+            Alias("type", Scalar("ville"))
+        ],
+        from_=[
+            URL("https://geo.api.gouv.fr/communes")
+        ]
+    )
+
+    assert plan(ast) == pl.Pipeline([
+        pl.Alias('https://geo.api.gouv.fr/communes', [
+            pl.Load('https://geo.api.gouv.fr/communes')
+        ]),
+        pl.Map({'nom': pl.Field('nom'), 'type': "ville"})
+    ])

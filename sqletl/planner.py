@@ -1,12 +1,9 @@
 from . import ast
 from . import pipeline
+from .errors import PlannerError
 
 
 AGGREGATE_FUNCS = ("COUNT", "SUM", "AVG", "MIN", "MAX", "TOTAL", "GROUP_CONCAT", "STRING_AGG")
-
-
-class PlannerError(Exception):
-    pass
 
 
 def plan(node):
@@ -55,6 +52,7 @@ def walk_select(select):
     if None in queries and len([s for s in sources if not s[0]]) > 1:
         raise PlannerError("Cannot use multiple unaliased sources in FROM clause when using unidentified query params")
 
+    cleanup_fields = []
     for alias, source, database, source_filters, join_type in sources:
         if source_filters and join_type not in ("INNER", "LEFT"):
             raise PlannerError(f"Unsupported JOIN type {join_type}")
@@ -79,9 +77,9 @@ def walk_select(select):
         if alias in queries:
             # the WHERE clause contains queries for this source
             for params in queries[alias]:
-                table_tasks.append(create_source(source, params + source_params, database))
+                table_tasks.append(create_source(source, params + source_params, database, cleanup_fields))
         else:
-            table_tasks.append(create_source(source, source_params, database))
+            table_tasks.append(create_source(source, source_params, database, cleanup_fields))
         
         if len(table_tasks) > 1:
             table_tasks = [pipeline.Union(*table_tasks)]
@@ -122,7 +120,9 @@ def walk_select(select):
                 has_select = True
             else:
                 has_select = True
-        elif not isinstance(field, ast.Field):
+        elif isinstance(field, ast.Scalar) and not alias:
+            has_select = True
+        elif not isinstance(field, (ast.Field, ast.Scalar)):
             has_select = True
         if alias:
             field = ast.Alias(alias, field)
@@ -138,13 +138,15 @@ def walk_select(select):
     
     has_where = filters and (len(filters.nodes) > 1 or any([not isinstance(n, ast.Condition) or n.operator not in pipeline.Condition.operators\
                                                             for _and in filters.nodes for n in _and.nodes]))
-    require_sql = has_select or has_where or select.group_by or select.window
+    require_sql = has_select or has_where or select.group_by or select.window or not sources
     if require_sql:
         # the query contains pieces that need to be processed using a real SQL engine
         # we partially rebuild the SQL statement
         if mapping_append:
             fields.insert(0, ast.Field("*"))
-        sql = ast.Select(fields, from_=[ast.Table("data")], where=walk_filters(filters) if filters else None)
+        sql = ast.Select(prepare_fields_for_pipeline_sql(fields),
+                         from_=[ast.Table("data")] if sources else None,
+                         where=walk_filters(filters) if filters else None)
         if not expands:
             sql.group_by = select.group_by
             sql.window = select.window
@@ -152,7 +154,7 @@ def walk_select(select):
             sql.order_by = select.order_by
             sql.limit = select.limit
             sql.offset = select.offset
-        tasks.append(pipeline.SQL(str(sql)))
+        tasks.append(pipeline.SQL(str(sql), ignore_prev=not sources))
     else:
         if filters and filters.nodes:
             tasks.append(walk_comparisons(filters.nodes[0].nodes))
@@ -165,6 +167,9 @@ def walk_select(select):
                 field = convert_operand(field)
                 mapping[alias or field.name] = field
             tasks.append(pipeline.Map(mapping, append=mapping_append))
+    
+    if (not fields or mapping_append) and cleanup_fields:
+        tasks.append(pipeline.RemoveFields(cleanup_fields))
 
     if expands:
         tasks.extend(expands)
@@ -191,11 +196,12 @@ def walk_select(select):
     return tasks
             
 
-def create_source(source, params, database):
+def create_source(source, params, database, cleanup_fields):
     tasks = [pipeline.Load(source, params, database)]
     if params:
         params = [(f"?{name}", pipeline.JointField(value) if isinstance(value, pipeline.Field) else value) for name, value in params]
         tasks.append(pipeline.Map(dict(params), append=True))
+        cleanup_fields.extend([f[0] for f in params])
     return tasks
        
 
@@ -224,6 +230,19 @@ def discard_filter_query_fields(or_node):
     if not _or:
         return None
     return ast.Or(list(_or.values()))
+
+
+def prepare_fields_for_pipeline_sql(fields):
+    out = []
+    for field in fields:
+        alias = None
+        if isinstance(field, ast.Alias):
+            alias = field.alias
+            field = field.node
+        if isinstance(field, ast.Field):
+            field = ast.Field(field.path)
+        out.append(ast.Alias(alias, field) if alias else field)
+    return out
 
 
 def walk_filters(or_node):

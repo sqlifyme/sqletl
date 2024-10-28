@@ -1,4 +1,5 @@
 from .datatable import DataTable, DictDataTable, iter_peek, PandasDataTable
+from .errors import ReaderError
 from urllib.parse import parse_qsl
 import json
 import jsonpath_ng
@@ -18,7 +19,7 @@ def read_file(fd, filename=None, target_path=None, content_type=None):
 
     if content_type:
         if content_type not in READERS:
-            raise Exception(f"Unsupported content type: {content_type}")
+            raise ReaderError(f"Unsupported content type: {content_type}")
         return READERS[content_type](fd, target_path)
     
     for content_type, reader in READERS.items():
@@ -27,11 +28,14 @@ def read_file(fd, filename=None, target_path=None, content_type=None):
         except:
             pass
 
-    raise Exception("Failed to read file")
+    raise ReaderError("Failed to parse data")
 
 
 def read_json(fd, target_path=None):
-    data = json.load(fd)
+    try:
+        data = json.load(fd)
+    except:
+        raise ReaderError("Invalid JSON data")
     if not data:
         return DataTable()
     return json_as_datatable(data, target_path)
@@ -39,7 +43,10 @@ def read_json(fd, target_path=None):
 
 def json_as_datatable(data, target_path=None):
     if target_path:
-        expr = jsonpath_ng.parse(target_path)
+        try:
+            expr = jsonpath_ng.parse(target_path)
+        except:
+            raise ReaderError(f"Invalid JSONPath expression: {target_path}")
         r = expr.find(data)
         if not r:
             return DataTable()
@@ -53,9 +60,15 @@ def json_as_datatable(data, target_path=None):
 def read_csv(fd, target_path=None):
     params = {"header": "1", "delimiter": ",", "quote": '"'}
     if target_path:
-        params.update({k: v[0] for k, v in parse_qsl(target_path)})
+        try:
+            params.update({k: v[0] for k, v in parse_qsl(target_path)})
+        except:
+            raise ReaderError(f"Invalid CSV parameters: {target_path}")
     with io.TextIOWrapper(fd, encoding="utf-8", errors="replace") as tfd:
-        r = csv.reader(tfd, delimiter=params["delimiter"], quotechar=params["quote"])
+        try:
+            r = csv.reader(tfd, delimiter=params["delimiter"], quotechar=params["quote"])
+        except:
+            raise ReaderError("Failed reading CSV data")
         try:
             if "cols" in params:
                 cols = params["cols"].split(",")
@@ -67,32 +80,56 @@ def read_csv(fd, target_path=None):
             return DataTable(cols, list(r))
         except StopIteration:
             return DataTable()
+        except:
+            raise ReaderError("Failed reading CSV data")
 
 
 def read_excel(fd, target_path=None):
-    df = pd.read_excel(fd)
+    try:
+        df = pd.read_excel(fd)
+    except:
+        raise ReaderError("Failed reading Excel data")
     return PandasDataTable(df)
 
 
 def read_parquet(fd, target_path=None):
-    df = pd.read_parquet(fd)
+    try:
+        df = pd.read_parquet(fd)
+    except:
+        raise ReaderError("Failed reading Parquet data")
     return PandasDataTable(df)
     
 
 def read_sqlite(fd, target_path=None):
-    f = tempfile.NamedTemporaryFile(delete=False)
-    f.write(fd.read())
-    f.close()
+    try:
+        f = tempfile.NamedTemporaryFile(delete=False)
+        f.write(fd.read())
+        f.close()
+    except:
+        raise ReaderError("Failed reading SQLite data")
+    
+    try:
+        conn = sqlite3.connect(f.name)
+    except:
+        os.unlink(f.name)
+        raise ReaderError("Failed opening SQLite database")
 
-    conn = sqlite3.connect(f.name)
     c = conn.cursor()
-    c.execute('SELECT * FROM "%s"' % target_path)
-    cols = [d[0] for d in c.description]
-    dt = DataTable(cols, c.fetchall())
+    error = False
+    try:
+        c.execute('SELECT * FROM "%s"' % target_path)
+        cols = [d[0] for d in c.description]
+        dt = DataTable(cols, c.fetchall())
+    except Exception as e:
+        error = e
+
     c.close()
     conn.close()
-
     os.unlink(f.name)
+
+    if error:
+        raise ReaderError("Failed executing SQLite query: {e}")
+    
     return dt
 
 

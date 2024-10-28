@@ -44,9 +44,15 @@ class Parser(BaseParser):
             if name == "*":
                 yield "*"
                 continue
-            if re.match("[a-z0-9_]+\(", name, re.I):
+            if name.startswith("'"):
+                field = ast.Scalar(unquote(name))
+            elif re.match(r"^\d+$", name):
+                field = ast.Scalar(int(name))
+            elif re.match("[a-z0-9_]+\(", name, re.I):
                 name, args = self.parse_sql_func(name)
                 field = ast.Function(name.upper(), [self.parse_expr(e) for e in args])
+            elif name.lower().startswith("case "):
+                field = ast.SQLExpr(name)
             else:
                 field = ast.Field(name, schema)
             if over:

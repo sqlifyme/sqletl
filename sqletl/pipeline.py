@@ -11,10 +11,8 @@ import re
 from contextlib import contextmanager
 from .ctx import Context
 from .datatable import DataTable, iter_peek
-
-
-class PipelineError(Exception):
-    pass
+from .errors import PipelineError
+from postgres_proto.sql.tokenizer import unquote
 
 
 class Task:
@@ -287,6 +285,23 @@ class Map(Task):
 
     def __repr__(self):
         return f"Map({repr(self.fields)}, append={self.append})"
+
+
+class RemoveFields(Task):
+    def __init__(self, fields):
+        super().__init__()
+        self.fields = fields
+
+    def _run(self, ctx: Context, prev: DataTable):
+        idxes_to_remove = [prev.colidx(f.name, f.source) if isinstance(f, Field) else prev.colidx(f) for f in self.fields]
+        def rows():
+            for row in prev:
+                yield tuple([row[i] for i in range(len(row)) if i not in idxes_to_remove])
+        cols = [c for i, c in enumerate(prev.cols) if i not in idxes_to_remove]
+        return DataTable(cols, rows())
+
+    def __repr__(self):
+        return f"RemoveColumns({self.fields})"
 
 
 class Intersection(Task):
@@ -610,20 +625,22 @@ class Print(Task):
     
 
 class SQL(Task):
-    def __init__(self, query, source=None):
+    def __init__(self, query, source=None, ignore_prev=False):
         super().__init__()
         self.query = query
         self.source = source
+        self.ignore_prev = ignore_prev
 
     def _run(self, ctx: Context, prev: DataTable):
-        if prev.is_empty():
+        if not self.ignore_prev and prev.is_empty():
             return DataTable()
         conn = sqlite3.connect(":memory:")
         cur = conn.cursor()
-        cur.execute("CREATE TABLE data (%s)" % ', '.join([f'"{c}"' for c in prev.colnames]))
-        cols = list(prev.idx_by_unique_names.values())
-        bindings = [[json.dumps(row[i]) if isinstance(row[i], (list, dict)) else row[i] for i in cols] for row in prev]
-        cur.executemany(f"INSERT INTO data VALUES ({', '.join(['?' for _ in prev.cols])})", bindings)
+        if not self.ignore_prev:
+            cur.execute("CREATE TABLE data (%s)" % ', '.join([f'"{c}"' for c in prev.colnames]))
+            cols = list(prev.idx_by_unique_names.values())
+            bindings = [[json.dumps(row[i]) if isinstance(row[i], (list, dict)) else row[i] for i in cols] for row in prev]
+            cur.executemany(f"INSERT INTO data VALUES ({', '.join(['?' for _ in prev.cols])})", bindings)
         cur.execute(self.query)
         rows = cur.fetchall()
         cols = [col[0] for col in cur.description]
@@ -639,8 +656,11 @@ def sql_json_accessors_to_jsonpath(path):
     parts = path.replace("->>", "->").split("->")
     jsonpath = []
     for part in parts:
-        if part.isdigit():
+        part = unquote(part)
+        if part.startswith("$"):
+            jsonpath.append(part[1:])
+        elif part.isdigit():
             jsonpath.append(f"[{part}]")
         else:
-            jsonpath.append(f".{part}")
+            jsonpath.append(part if part.startswith(".") else f".{part}")
     return "".join(jsonpath).lstrip(".")

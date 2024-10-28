@@ -1,5 +1,6 @@
 from .reader import read_file
 from .datatable import DataTable, iter_peek
+from .errors import ProtocolError
 from io import BytesIO
 import requests
 import os
@@ -9,10 +10,6 @@ import mysql.connector
 import s3fs
 import fsspec
 import json
-
-
-class ProtocolError(Exception):
-    pass
 
 
 class Http:
@@ -43,7 +40,6 @@ class Http:
                 kwargs["data"] = params
             else:
                 kwargs["params"] = params
-            print((url, kwargs))
             r = requests.request(method, url, **kwargs)
         except:
             raise ProtocolError(f"Request failed: {url}")
@@ -70,18 +66,21 @@ class File:
     def validate_filename(self, filename):
         filename = os.path.abspath(os.path.join(self.path, filename))
         if not filename.startswith(self.path):
-            raise Exception(f"Invalid path: {filename}")
+            raise ProtocolError(f"Invalid path: {filename}")
         if not os.path.exists(filename):
-            raise Exception(f"File not found: {filename}")
+            raise ProtocolError(f"File not found: {filename}")
         return filename
 
 
 class FsspecBase:
     def get(self, ctx, url, params, content_type):
         url, fragment, params = prepare_url(url, params)
-        fs, path = self.create_fs(url, params)
-        with fs.open(path, 'rb') as f:
-            return read_file(f, url, fragment, content_type)
+        try:
+            fs, path = self.create_fs(url, params)
+            with fs.open(path, 'rb') as f:
+                return read_file(f, url, fragment, content_type)
+        except Exception as e:
+            raise ProtocolError(f"Failed to read file: {url}\n{str(e)}")
         
     def create_fs(self, url, params):
         raise NotImplementedError()
@@ -179,9 +178,9 @@ class GoogleSheets:
         url, fragment, config = prepare_url(url, params)
         parts = self.parse_url(url)
         if not parts.hostname:
-            raise Exception("Missing spreadsheetId (gsheets://token@spreadsheetId/sheetId)")
+            raise ProtocolError("Missing spreadsheetId (gsheets://token@spreadsheetId/sheetId)")
         if not parts.username:
-            raise Exception("Missing authorization token (gsheets://token@spreadsheetId/sheetId)")
+            raise ProtocolError("Missing authorization token (gsheets://token@spreadsheetId/sheetId)")
 
         config = dict(config)
         params = []
@@ -207,7 +206,7 @@ class GoogleSheets:
             if sheet["properties"]["sheetId"] == sheet_id:
                 break
         if not found:
-            raise Exception(f"Sheet not found: {sheet_id}")
+            raise ProtocolError(f"Sheet not found: {sheet_id}")
 
         def iter_rows(sheet):
             for row in sheet["data"][0]["rowData"]:

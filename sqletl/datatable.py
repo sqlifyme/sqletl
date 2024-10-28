@@ -43,13 +43,17 @@ class DataTable:
             self.source_by_unique_names.setdefault(col, src)
             self.prefixed_cols.append(src + '__' + col if src else col)
 
-    def colidx(self, col, source=None):
-        if source:
-            return self.idx_by_sources[source][col]
-        return self.idx_by_unique_names[col]
+    def colidx(self, col, source=None, case_sensitive=False):
+        idxes = self.idx_by_sources[source] if source else self.idx_by_unique_names
+        try:
+            return idxes[col]
+        except KeyError:
+            if not case_sensitive:
+                return idxes[col.lower()]
+            raise
 
-    def get(self, row, col, source=None):
-        return row[self.colidx(col, source)]
+    def get(self, row, col, source=None, case_sensitive=False):
+        return row[self.colidx(col, source, case_sensitive)]
     
     def peek(self):
         try:

@@ -190,3 +190,34 @@ def test_group_by():
             URL("https://geo.api.gouv.fr/communes")
         ]
     )
+
+
+def test_select_scalar():
+    stmt = """
+        SELECT 1
+    """
+    assert parse(stmt) == Select(
+        fields=[Scalar(1)]
+    )
+
+    stmt = """
+        SELECT 1 as "result"
+    """
+    print(repr(parse(stmt)))
+    assert parse(stmt) == Select(
+        fields=[Alias("result", Scalar(1))]
+    )
+
+    stmt = """
+        SELECT nom, 'ville' as type
+        FROM "https://geo.api.gouv.fr/communes"
+    """
+    assert parse(stmt) == Select(
+        fields=[
+            Field("nom"),
+            Alias("type", Scalar("ville"))
+        ],
+        from_=[
+            URL("https://geo.api.gouv.fr/communes")
+        ]
+    )
