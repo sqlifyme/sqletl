@@ -21,6 +21,8 @@ You can provide options via the fragment of the URI to parse the CSV.<br>
   - `header`: set to 0 to not use the first row as column names
   - `delimiter`: which delimiter to use (defaults to `,`)
   - `quote`: quotation to use (defaults to `"`)
+  - `types`: set to 0 to keep all values as strings. By default, columns where all values are
+    numbers are converted to integers or floats (values with leading zeros like `01` are not numbers)
 
 Example:
 

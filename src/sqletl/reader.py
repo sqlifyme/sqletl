@@ -2,6 +2,7 @@ from .datatable import DataTable, DictDataTable, iter_peek, PandasDataTable
 from .errors import ReaderError
 from urllib.parse import parse_qsl
 import json
+import re
 import jsonpath_ng
 import csv
 import sqlite3
@@ -58,7 +59,7 @@ def json_as_datatable(data, target_path=None):
 
 
 def read_csv(fd, target_path=None):
-    params = {"header": "1", "delimiter": ",", "quote": '"'}
+    params = {"header": "1", "delimiter": ",", "quote": '"', "types": "1"}
     if target_path:
         try:
             params.update({k: v[0] for k, v in parse_qsl(target_path)})
@@ -77,11 +78,38 @@ def read_csv(fd, target_path=None):
                 cols = [f"col{i}" for i in range(len(first))]
             else:
                 cols = next(r)
-            return DataTable(cols, list(r))
+            rows = list(r)
+            if params["types"] != "0":
+                rows = infer_csv_types(rows)
+            return DataTable(cols, rows)
         except StopIteration:
             return DataTable()
         except:
             raise ReaderError("Failed reading CSV data")
+
+
+CSV_INT_RE = re.compile(r"-?(0|[1-9]\d*)")
+CSV_FLOAT_RE = re.compile(r"-?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?")
+
+
+def infer_csv_types(rows):
+    """Convert columns where all values are numbers to int or float.
+    Values with leading zeros (eg: zip codes) are not considered numbers.
+    Empty values in numeric columns become None.
+    """
+    converters = []
+    for i in range(max(map(len, rows), default=0)):
+        values = [row[i] for row in rows if i < len(row) and row[i] != ""]
+        if values and all(CSV_INT_RE.fullmatch(v) for v in values):
+            converters.append(int)
+        elif values and all(CSV_FLOAT_RE.fullmatch(v) for v in values):
+            converters.append(float)
+        else:
+            converters.append(None)
+    if not any(converters):
+        return rows
+    return [[(conv(v) if v != "" else None) if conv else v for v, conv in zip(row, converters)]
+            for row in rows]
 
 
 def read_excel(fd, target_path=None):

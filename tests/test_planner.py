@@ -1,3 +1,5 @@
+import pytest
+from sqletl.errors import PlannerError
 from sqletl.ast import *
 from sqletl import pipeline as pl
 from sqletl.planner import plan
@@ -431,11 +433,11 @@ def test_group_by():
 def test_scalar():
     ast = Select(fields=[Scalar(1)])
     assert plan(ast) == pl.Pipeline([
-        pl.SQL('SELECT 1')
+        pl.SQL('SELECT 1', ignore_prev=True)
     ])
     ast = Select(fields=[Alias("result", Scalar(1))])
     assert plan(ast) == pl.Pipeline([
-        pl.SQL('SELECT 1 AS "result"')
+        pl.SQL('SELECT 1 AS "result"', ignore_prev=True)
     ])
 
 
@@ -456,3 +458,17 @@ def test_simple_with_scalar():
         ]),
         pl.Map({'nom': pl.Field('nom'), 'type': "ville"})
     ])
+
+def test_join_unsupported_condition():
+    ast = Select(
+        fields=["*"],
+        from_=[
+            Join(
+                Table("a"),
+                Table("b"),
+                Condition(Field("x", "a"), "=", SQLExpr("b.y + 1"))
+            )
+        ]
+    )
+    with pytest.raises(PlannerError):
+        plan(ast)

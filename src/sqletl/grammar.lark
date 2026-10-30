@@ -1,0 +1,163 @@
+// SQL grammar for sqletl (LALR).
+// Parts that are only passed through to SQLite (CASE, arithmetic, OVER, GROUP BY,
+// WINDOW...) are parsed for validation but kept as raw SQL text by the transformer.
+
+start: (select | with_query) ";"?
+
+with_query: _WITH cte ("," cte)* select
+cte: identifier _AS "(" select ")"
+
+select: _SELECT [DISTINCT] select_list [from_clause] [where_clause] [group_by_clause] [window_clause] [order_by_clause] [limit_clause | offset_clause]
+
+select_list: select_item ("," select_item)*
+select_item: "*"                        -> star
+           | identifier "." "*"         -> star
+           | expr [[_AS] alias]         -> field
+alias: identifier | STRING
+
+from_clause: _FROM from_item ("," from_item)*
+from_item: table_ref join*
+join: [join_type] _JOIN table_ref _ON expr
+join_type: INNER | LEFT [OUTER] | RIGHT [OUTER] | FULL [OUTER]
+table_ref: table_name [[_AS] identifier]
+table_name: identifier ("." identifier)?
+
+where_clause: _WHERE expr
+
+group_by_clause: _GROUP _BY group_by_body
+group_by_body: expr ("," expr)* [_HAVING expr]
+
+window_clause: _WINDOW window_body
+window_body: window_def ("," window_def)*
+window_def: identifier _AS paren_group
+
+order_by_clause: _ORDER _BY order_item ("," order_item)*
+order_item: order_expr [ASC | DESC]
+order_expr: expr
+
+limit_clause: _LIMIT INT [_OFFSET INT]
+offset_clause: _OFFSET INT
+
+// --- expressions, lowest precedence first
+
+?expr: or_expr
+?or_expr: and_expr (_OR and_expr)*
+?and_expr: not_expr (_AND not_expr)*
+?not_expr: NOT not_expr                                 -> negation
+         | predicate
+?predicate: sum_expr
+          | sum_expr comp_op sum_expr                   -> comparison
+          | sum_expr [NOT] _IN in_values                -> in_comparison
+          | sum_expr _IS [NOT] sum_expr                 -> is_comparison
+          | sum_expr [NOT] _BETWEEN sum_expr _AND sum_expr -> between
+comp_op: COMP_OP | [NOT] (LIKE | ILIKE | GLOB | REGEXP)
+in_values: "(" expr ("," expr)* ")"
+
+?sum_expr: product
+         | sum_expr ("+" | "-") product                 -> arith
+?product: concat
+        | product ("*" | "/" | "%") concat              -> arith
+?concat: unary
+       | concat "||" unary                              -> arith
+?unary: primary
+      | "-" unary                                       -> neg
+      | "+" unary
+
+?primary: literal
+        | column
+        | func_expr
+        | case_expr
+        | cast_expr
+        | "(" expr ")"                                  -> paren
+
+?literal: STRING                                        -> string
+        | NUMBER                                        -> number
+        | NULL                                          -> null
+        | TRUE                                          -> true
+        | FALSE                                         -> false
+
+column: column_name json_access*
+column_name: identifier ("." identifier)?
+json_access: JSON_OP (identifier | STRING | INT)
+
+func_expr: func_call [filter_clause] [over_clause]
+func_call: NAME "(" [func_args] ")"
+func_args: "*"                                          -> star_args
+         | distinct_arg ("," expr)*                     -> args
+         | expr ("," expr)*                             -> args
+distinct_arg: DISTINCT expr
+filter_clause: _FILTER paren_group
+over_clause: _OVER over_spec
+over_spec: identifier | paren_group
+
+case_expr: _CASE [expr] case_when+ [_ELSE expr] _END
+case_when: _WHEN expr _THEN expr
+cast_expr: _CAST "(" expr _AS type_name ")"
+type_name: NAME+ ["(" INT ("," INT)? ")"]
+
+// balanced parentheses, kept verbatim (window specs, FILTER clauses).
+// Nested groups use their own rule so that ANY is not accepted after the outermost ")"
+paren_group: "(" _group_token* ")"
+_group_token: ANY | "(" _group_token* ")"
+
+identifier: NAME | QUOTED_NAME
+
+// --- terminals
+
+NAME: /\??[A-Za-z_][A-Za-z0-9_$]*/
+QUOTED_NAME: /"(?:[^"]|"")*"/
+STRING: /'(?:[^']|'')*'/
+NUMBER: /(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/
+INT: /\d+/
+COMP_OP: "<>" | "<=" | ">=" | "!=" | "==" | "!~" | "=" | "<" | ">" | "~"
+JSON_OP: "->>" | "->"
+ANY: /'(?:[^']|'')*'|"(?:[^"]|"")*"|[^\s()'"]+/
+
+_SELECT: "SELECT"i
+_WITH: "WITH"i
+_AS: "AS"i
+_FROM: "FROM"i
+_JOIN: "JOIN"i
+_ON: "ON"i
+_WHERE: "WHERE"i
+_GROUP: "GROUP"i
+_BY: "BY"i
+_HAVING: "HAVING"i
+_WINDOW: "WINDOW"i
+_ORDER: "ORDER"i
+_LIMIT: "LIMIT"i
+_OFFSET: "OFFSET"i
+_OR: "OR"i
+_AND: "AND"i
+_IN: "IN"i
+_IS: "IS"i
+_BETWEEN: "BETWEEN"i
+_FILTER: "FILTER"i
+_OVER: "OVER"i
+_CASE: "CASE"i
+_WHEN: "WHEN"i
+_THEN: "THEN"i
+_ELSE: "ELSE"i
+_END: "END"i
+_CAST: "CAST"i
+DISTINCT: "DISTINCT"i
+INNER: "INNER"i
+LEFT: "LEFT"i
+RIGHT: "RIGHT"i
+FULL: "FULL"i
+OUTER: "OUTER"i
+ASC: "ASC"i
+DESC: "DESC"i
+NOT: "NOT"i
+LIKE: "LIKE"i
+ILIKE: "ILIKE"i
+GLOB: "GLOB"i
+REGEXP: "REGEXP"i
+NULL: "NULL"i
+TRUE: "TRUE"i
+FALSE: "FALSE"i
+
+COMMENT.2: /--[^\n]*/ | /\/\*(.|\n)*?\*\//
+%import common.WS
+%ignore WS
+%ignore COMMENT

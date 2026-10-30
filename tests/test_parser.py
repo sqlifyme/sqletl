@@ -1,3 +1,4 @@
+import pytest
 from sqletl.ast import *
 from sqletl.parser import parse
 
@@ -221,3 +222,103 @@ def test_select_scalar():
             URL("https://geo.api.gouv.fr/communes")
         ]
     )
+
+def test_comparison_operators():
+    stmt = """
+        SELECT a FROM t WHERE a <= 1 AND b >= 2 AND c <> 3 AND d NOT LIKE 'x%'
+    """
+    assert parse(stmt) == Select(
+        fields=[Field("a")],
+        from_=[Table("t")],
+        where=And([
+            Condition(Field("a"), "<=", Scalar(1)),
+            Condition(Field("b"), ">=", Scalar(2)),
+            Condition(Field("c"), "<>", Scalar(3)),
+            Condition(Field("d"), "not like", Scalar("x%")),
+        ])
+    )
+
+
+def test_null_and_in():
+    stmt = """
+        SELECT * FROM t WHERE a IS NOT NULL AND b IN (1, 2) AND NOT (c = 1 OR c = 2)
+    """
+    assert parse(stmt) == Select(
+        fields=["*"],
+        from_=[Table("t")],
+        where=And([
+            Condition(Field("a"), "is not", Scalar(None)),
+            Condition(Field("b"), "in", SQLExpr("(1, 2)")),
+            Not(Or([
+                Condition(Field("c"), "=", Scalar(1)),
+                Condition(Field("c"), "=", Scalar(2)),
+            ])),
+        ])
+    )
+
+
+def test_join_types():
+    stmt = """
+        SELECT * FROM a LEFT JOIN b ON a.x = b.x INNER JOIN c ON b.y = c.y
+    """
+    assert parse(stmt) == Select(
+        fields=["*"],
+        from_=[
+            Join(
+                Table("a"),
+                Join(Table("b"), Table("c"), Condition(Field("y", "b"), "=", Field("y", "c"))),
+                Condition(Field("x", "a"), "=", Field("x", "b")),
+                "LEFT"
+            )
+        ]
+    )
+
+
+def test_literals():
+    stmt = """
+        SELECT 1.5, -2, 'it''s', NULL, TRUE
+    """
+    assert parse(stmt) == Select(
+        fields=[Scalar(1.5), Scalar(-2), Scalar("it's"), Scalar(None), Scalar(True)]
+    )
+    assert str(parse(stmt)) == "SELECT 1.5, -2, 'it''s', NULL, TRUE"
+
+
+def test_sql_expressions():
+    stmt = """
+        SELECT a + b AS c, CASE WHEN a > 1 THEN 'x' ELSE 'y' END AS d,
+               ROW_NUMBER() OVER (PARTITION BY a ORDER BY b) rn
+        FROM t
+        GROUP BY a, b HAVING COUNT(*) > 1
+        ORDER BY c DESC
+        LIMIT 10 OFFSET 5
+    """
+    assert parse(stmt) == Select(
+        fields=[
+            Alias("c", SQLExpr("a + b")),
+            Alias("d", SQLExpr("CASE WHEN a > 1 THEN 'x' ELSE 'y' END")),
+            Alias("rn", WindowFunction(Function("ROW_NUMBER", []), "(PARTITION BY a ORDER BY b)")),
+        ],
+        from_=[Table("t")],
+        group_by=SQLExpr("a, b HAVING COUNT(*) > 1"),
+        order_by=[(Field("c"), "DESC")],
+        limit="10",
+        offset="5"
+    )
+
+
+def test_comments():
+    stmt = """
+        -- fetch communes
+        SELECT nom /* the name */ FROM "https://geo.api.gouv.fr/communes";
+    """
+    assert parse(stmt) == Select(
+        fields=[Field("nom")],
+        from_=[URL("https://geo.api.gouv.fr/communes")]
+    )
+
+
+def test_syntax_error():
+    for stmt in ("UPDATE t SET a = 1", "SELECT a FROM", "SELECT a FROM t WHERE a ="):
+        with pytest.raises(SyntaxError):
+            parse(stmt)

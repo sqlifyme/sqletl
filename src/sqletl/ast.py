@@ -155,8 +155,12 @@ class Scalar(Node):
         self.value = value
 
     def __str__(self):
+        if self.value is None:
+            return "NULL"
+        if isinstance(self.value, bool):
+            return "TRUE" if self.value else "FALSE"
         if isinstance(self.value, str):
-            return f"'{self.value}'"
+            return "'" + self.value.replace("'", "''") + "'"
         return str(self.value)
 
 

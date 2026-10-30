@@ -87,6 +87,10 @@ def walk_select(select):
             table_tasks = table_tasks[0]
         table = pipeline.Alias(alias or source, table_tasks)
         if source_filters and source_filters.nodes:
+            for comp in source_filters.nodes[0].nodes:
+                is_query_param = isinstance(comp, ast.Condition) and isinstance(comp.left, ast.QueryField)
+                if not is_query_param and not is_pipeline_condition(comp):
+                    raise PlannerError(f"Unsupported condition in JOIN's ON clause: {comp}")
             source_filters = walk_comparisons(source_filters.nodes[0].nodes, remove_query_fields=True)
             tasks.append(pipeline.Join([table], source_filters, left=join_type == "LEFT", preload=not has_query_fields))
         else:
@@ -136,7 +140,7 @@ def walk_select(select):
     if filters:
         filters = discard_filter_query_fields(filters)
     
-    has_where = filters and (len(filters.nodes) > 1 or any([not isinstance(n, ast.Condition) or n.operator not in pipeline.Condition.operators\
+    has_where = filters and (len(filters.nodes) > 1 or any([not is_pipeline_condition(n)\
                                                             for _and in filters.nodes for n in _and.nodes]))
     require_sql = has_select or has_where or select.group_by or select.window or not sources
     if require_sql:
@@ -255,6 +259,18 @@ def walk_filters(or_node):
     return or_node
         
     
+def is_pipeline_condition(node):
+    """Whether the condition can be evaluated by the pipeline without a SQL engine"""
+    return isinstance(node, ast.Condition) and node.operator in pipeline.Condition.operators\
+        and is_pipeline_operand(node.left) and is_pipeline_operand(node.right)
+
+
+def is_pipeline_operand(node):
+    if isinstance(node, ast.Function):
+        return node.func.lower() in pipeline.Expression.functions and all(map(is_pipeline_operand, node.args))
+    return isinstance(node, (ast.Field, ast.Scalar))
+
+
 def walk_comparisons(comparisons, remove_query_fields=False):
     out = pipeline.Filter([])
     for comp in comparisons:

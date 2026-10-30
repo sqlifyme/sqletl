@@ -21,3 +21,7 @@ class ProtocolError(SqletlError):
 
 class ReaderError(SqletlError):
     pass
+
+
+class ParserError(SqletlError, SyntaxError):
+    pass

@@ -1,5 +1,18 @@
 from sqletl.pipeline import *
 from sqletl.datatable import DictDataTable
+from sqletl.reader import infer_csv_types
+from sqletl import execute
+
+
+# Tests below query live APIs whose data changes over time (eg: populations),
+# hence they check stable properties or compare against the raw data instead of fixed values
+
+def load_communes(**params):
+    return Pipeline([Load('https://geo.api.gouv.fr/communes', params)]).run().to_dict()
+
+
+def sum_population(communes):
+    return sum(c['population'] for c in communes if c.get('population'))
 
 
 def test_field():
@@ -16,7 +29,8 @@ def test_simple():
     ])
     r = pipe.run().to_dict()
     print(r)
-    assert r == [{'population': 63232, 'nom': 'Antony'}]
+    assert [row['nom'] for row in r] == ['Antony']
+    assert r[0]['population'] > 50000
 
 
 def test_union():
@@ -33,7 +47,9 @@ def test_union():
     ])
     r = pipe.run().to_dict()
     print(r)
-    assert r == [{'population': 63232, 'nom': 'Antony'}, {'nom': 'Paris', 'population': 2133111}]
+    assert [row['nom'] for row in r] == ['Antony', 'Paris']
+    assert r[0]['population'] > 50000
+    assert r[1]['population'] > 2000000
 
 
 def test_simple_join():
@@ -46,7 +62,8 @@ def test_simple_join():
     ])
     r = pipe.run().to_dict()
     print(r)
-    assert r == [{'population': 63232, 'nom': 'Antony'}]
+    assert [row['nom'] for row in r] == ['Antony']
+    assert r[0]['population'] > 50000
 
 
 def test_multi_join():
@@ -76,7 +93,9 @@ def test_multi_join():
     ])
     r = pipe.run().to_dict()
     print(r)
-    assert r[0] == {'addr': '31 Avenue Galliéni 92160 Antony', 'ville': 'Antony', 'nom_complet': 'LA POSTE (DIRECTION GENERALE DE LA POSTE)'}
+    assert r[0]['addr'] == '31 Avenue Galliéni 92160 Antony'
+    assert r[0]['ville'] == 'Antony'
+    assert isinstance(r[0]['nom_complet'], str) and r[0]['nom_complet']
 
 
 def test_join_on_tables():
@@ -97,7 +116,7 @@ def test_join_on_tables():
     ])
     r = pipe.run().to_dict()
     print(r)
-    assert r[0] == {'nom': 'paris', 'region': "75"}
+    assert r[0] == {'nom': 'paris', 'region': 75}
 
 
 def test_equality():
@@ -138,7 +157,7 @@ def test_aggreg():
     ])
     r = pipe.run().to_dict()
     print(r)
-    assert r == [{'sum': 1635291}]
+    assert r == [{'sum': sum_population(load_communes(codeDepartement=92))}]
 
 
 def test_group_by():
@@ -152,7 +171,7 @@ def test_group_by():
     ])
     r = pipe.run().to_dict()
     print(r)
-    assert r[0] == {'codeDepartement': '01', 'sum': 663202}
+    assert r[0] == {'codeDepartement': '01', 'sum': sum_population(load_communes(codeDepartement='01'))}
 
 
 def test_sql():
@@ -162,7 +181,7 @@ def test_sql():
     ])
     r = pipe.run().to_dict()
     print(r)
-    assert r[0] == {'codeDepartement': '01', 'sum': 663202}
+    assert r[0] == {'codeDepartement': '01', 'sum': sum_population(load_communes(codeDepartement='01'))}
 
 
 def test_csv():
@@ -171,7 +190,7 @@ def test_csv():
     ])
     r = pipe.run().to_dict()
     print(r)
-    assert r[0] == {'nom': 'paris', 'population': '2200000'}
+    assert r[0] == {'nom': 'paris', 'population': 2200000}
 
 
 def test_xls():
@@ -253,4 +272,27 @@ def test_simple_with_scalar():
     ])
     r = pipe.run().to_dict()
     print(r)
-    assert r == [{'population': 63232, 'nom': 'Antony', 'type': 'ville'}]
+    assert [(row['nom'], row['type']) for row in r] == [('Antony', 'ville')]
+    assert r[0]['population'] > 50000
+
+
+def test_csv_types():
+    assert infer_csv_types([["paris", "75", "2200000", "1.5", "01"], ["marseille", "13", "", "2", "13"]]) == [
+        ["paris", 75, 2200000, 1.5, "01"],
+        ["marseille", 13, None, 2.0, "13"],
+    ]
+    r = Pipeline([Load('file://tests/fixtures/data-join.csv#types=0')]).run().to_dict()
+    assert r[0] == {'nom': 'paris', 'region': '75'}
+
+
+def test_execute_csv():
+    f = "file://tests/fixtures/data.csv"
+    r = execute(f'SELECT nom FROM "{f}" WHERE population > 1000000').to_dict()
+    assert r == [{'nom': 'paris'}]
+    r = execute(f'SELECT nom FROM "{f}" ORDER BY population').to_dict()
+    assert [row['nom'] for row in r] == ['marseille', 'paris']
+    # expressions in WHERE are evaluated by SQLite
+    r = execute(f'SELECT nom FROM "{f}" WHERE population / 2 > 1000000').to_dict()
+    assert r == [{'nom': 'paris'}]
+    r = execute(f'SELECT nom FROM "{f}" WHERE ABS(population) < 1000000').to_dict()
+    assert r == [{'nom': 'marseille'}]

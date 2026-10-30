@@ -12,7 +12,6 @@ from contextlib import contextmanager
 from .ctx import Context
 from .datatable import DataTable, iter_peek
 from .errors import PipelineError
-from postgres_proto.sql.tokenizer import unquote
 
 
 class Task:
@@ -236,6 +235,8 @@ class Condition:
 
 
 class Expression:
+    functions = ("concat", "lower", "upper")
+
     def __init__(self, func, args):
         self.func = func.lower()
         self.args = args
@@ -650,6 +651,13 @@ class SQL(Task):
     
     def __repr__(self):
         return f"{self.__class__.__name__}({self.query})"
+
+
+def unquote(string):
+    for quote in ('"', "'"):
+        if string.startswith(quote) and string.endswith(quote):
+            return string[1:-1]
+    return string
 
 
 def sql_json_accessors_to_jsonpath(path):
