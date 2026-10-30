@@ -1,5 +1,5 @@
 site_name: SQLETL
-site_url: https://github.com/sqlify/sqletl
+repo_url: https://github.com/sqlifyme/sqletl
 nav:
   - index.md
   - http.md
@@ -36,4 +36,3 @@ markdown_extensions:
 
 plugins:
   - search
-  - callouts
