@@ -1,44 +1,44 @@
 [project]
 name = "sqletl"
-version = "0.1.0"
+version = "0.2.0"
 description = "Create ETL pipelines with SQL"
 authors = [
     {"name" = "Maxime Bouroumeau-Fuseau", email = "maxime.bouroumeau@gmail.com"}
 ]
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
-    "pyparsing~=3.1",
-    "requests~=2.32",
-    "jsonpath-ng~=1.6",
-    "pandas~=2.2",
-    "psycopg[binary]~=3.1",
-    "mysql-connector-python~=8.3",
-    "s3fs~=2024.9",
-    "fsspec~=2024.9",
-    "pyarrow~=17.0",
+    "pyparsing~=3.3",
+    "requests~=2.34",
+    "jsonpath-ng~=1.15",
+    "pandas~=3.1",
+    "psycopg[binary]~=3.3",
+    "mysql-connector-python~=26.10",
+    "s3fs~=2026.9",
+    "fsspec~=2026.9",
+    "pyarrow~=26.0",
     "openpyxl~=3.1",
-    "rich>=14.1.0",
-    "lark~=1.2",
+    "rich>=15.0.0",
+    "lark~=1.3",
 ]
 
 [project.scripts]
 sqletl = "sqletl.cli:main"
 
 [project.urls]
-Repository = "https://github.com/sqlify/sqletl"
+Repository = "https://github.com/sqlifyme/sqletl"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.4.1",
-    "pytest-cov>=6.2.1",
-    "ruff>=0.12.4",
+    "pytest>=9.2.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.17.3",
 ]
 
 [tool.ruff]
 line-length = 100
 
 [build-system]
-requires = ["uv_build>=0.8.11,<0.9.0"]
+requires = ["uv_build>=0.13.6,<0.14.0"]
 build-backend = "uv_build"

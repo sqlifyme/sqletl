@@ -112,6 +112,11 @@ class DataTable:
 
 class PandasDataTable(DataTable):
     def __init__(self, df, source=None):
+        # pandas 3 infers a str dtype with NaN for missing values, restore object dtype with None
+        str_cols = df.select_dtypes(include="str").columns
+        if len(str_cols):
+            df = df.astype({c: object for c in str_cols})
+            df[str_cols] = df[str_cols].where(df[str_cols].notna(), None)
         self.dataframe = df
         super().__init__(list(df.columns), df.values, source)
 
