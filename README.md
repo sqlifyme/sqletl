@@ -30,11 +30,8 @@ GROUP BY u.name
 
 ## Installation
 
-Requires Python 3.10+. The `postgres-proto` dependency is currently resolved from a sibling
-checkout (`../postgres-proto`).
-
 ```sh
-uv sync          # or: pip install .
+pip install sqletl
 ```
 
 ## Usage
@@ -90,7 +87,3 @@ conditions, and combining aggregates with `EXPAND`/`UNNEST` are not supported ye
 ```sh
 uv run pytest
 ```
-
-## License
-
-MIT
